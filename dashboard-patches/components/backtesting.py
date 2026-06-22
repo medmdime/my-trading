@@ -40,18 +40,26 @@ def _run_backtesting_request(backend_api_client, start_time, end_time, backtesti
     # Swap an excluded trading-rules connector for the candles connector so the engine
     # can build trading rules (see _BACKTEST_EXCLUDED_CONNECTORS above).
     if config.get("connector_name") in _BACKTEST_EXCLUDED_CONNECTORS:
+        excluded = config["connector_name"]
         candles_conn = config.get("candles_connector") or config.get("candles_connector_name")
         candles_pair = config.get("candles_trading_pair")
         if candles_conn and candles_conn not in _BACKTEST_EXCLUDED_CONNECTORS:
-            st.info(
-                f"`{config['connector_name']}` can't supply backtest trading rules "
-                f"(hummingbot engine limitation), so this backtest uses `{candles_conn}` "
-                f"rules instead. Your saved/live config still trades on "
-                f"`{config['connector_name']}`."
-            )
-            config["connector_name"] = candles_conn
-            if candles_pair:
-                config["trading_pair"] = candles_pair
+            # Prefer the candles connector — it already has valid rules + a matching pair.
+            new_conn, new_pair = candles_conn, candles_pair
+        else:
+            # Candles connector is ALSO excluded (e.g. both hyperliquid). Fall back to a
+            # universally-available perp connector and convert the pair to its quote (USDT).
+            new_conn = "binance_perpetual"
+            tp = config.get("trading_pair", "")
+            new_pair = (tp[:-4] + "-USDT") if tp.endswith("-USD") else (candles_pair or tp)
+        st.info(
+            f"`{excluded}` can't supply backtest trading rules (hummingbot engine "
+            f"limitation), so this backtest uses `{new_conn}` ({new_pair}) rules instead. "
+            f"Your saved/live config still trades on `{excluded}`."
+        )
+        config["connector_name"] = new_conn
+        if new_pair:
+            config["trading_pair"] = new_pair
     payload = {
         "start_time": start_time,
         "end_time": end_time,
