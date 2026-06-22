@@ -8,7 +8,9 @@
 services:
   hummingbot-api:
     container_name: hummingbot-api
-    image: hummingbot/hummingbot-api:latest      # <- upstream engine, pulled not built
+    # upstream engine — github.com/hummingbot/hummingbot-api (pulled, not built)
+    # pinned to the :latest digest as of 2026-06-22 for reproducibility
+    image: hummingbot/hummingbot-api:latest@sha256:4ebeed379a1f99cad8e2b1090108d44357900a4c88291488028936b56844784e
     ports:
       - "8000:8000"
     volumes:
@@ -38,7 +40,9 @@ services:
 
   dashboard:
     container_name: dashboard
-    image: hummingbot/dashboard:latest            # <- upstream UI, pulled not built
+    # upstream web UI — github.com/hummingbot/dashboard (pulled, not built)
+    # pinned to the :latest digest as of 2026-06-22 for reproducibility
+    image: hummingbot/dashboard:latest@sha256:fd28cc85ec0e8014a2cc7cf246acc932a41727dd4e6b5262d19c29a82400d80a
     ports:
       - "8501:8501"
     environment:
@@ -57,7 +61,7 @@ services:
 
   emqx:
     container_name: hummingbot-broker
-    image: emqx:5
+    image: emqx:5@sha256:c944155b31330c235c6547a3c8b791464e243d4c1ffbdc487a7ea07e94b884f4
     restart: unless-stopped
     environment:
       - EMQX_NAME=emqx
@@ -89,7 +93,7 @@ services:
 
   postgres:
     container_name: hummingbot-postgres
-    image: postgres:16
+    image: postgres:16@sha256:081f1bc7bd5e143dbb6e487b710bbc27712cdcfaced4c071b8e47349aa1b4171
     restart: unless-stopped
     environment:
       - POSTGRES_DB=hummingbot_api
