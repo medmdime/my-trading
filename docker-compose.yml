@@ -1,0 +1,120 @@
+# Thin orchestration for MY trading stack.
+# Everything here runs from PUBLISHED IMAGES — I do not maintain this source.
+# Update the engine/UI with:  docker compose pull && docker compose up -d
+# The ONLY code I maintain lives in:
+#   - ./bots/controllers/...   (my strategies)
+#   - ./bots/conf/controllers/ (my configs)
+#   - ./dashboard-patches/     (my strategy's config page + backtest fix)
+services:
+  hummingbot-api:
+    container_name: hummingbot-api
+    image: hummingbot/hummingbot-api:latest      # <- upstream engine, pulled not built
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./bots:/hummingbot-api/bots               # <- MY strategies mount in here
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /proc:/host/proc:ro
+      - /etc/hostname:/host/disk-probe:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    env_file:
+      - .env
+    environment:
+      - BROKER_HOST=emqx
+      - DATABASE_URL=postgresql+asyncpg://hbot:hummingbot-api@postgres:5432/hummingbot_api
+      - GATEWAY_URL=http://host.docker.internal:15888
+      - HOST_PROC=/host/proc
+      - HOST_DISK_PATH=/host/disk-probe
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - emqx-bridge
+    depends_on:
+      - postgres
+
+  dashboard:
+    container_name: dashboard
+    image: hummingbot/dashboard:latest            # <- upstream UI, pulled not built
+    ports:
+      - "8501:8501"
+    environment:
+      - AUTH_SYSTEM_ENABLED=False
+      - BACKEND_API_HOST=host.docker.internal
+      - BACKEND_API_PORT=8000
+      - BACKEND_API_USERNAME=admin
+      - BACKEND_API_PASSWORD=admin
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      # Overlay ONLY my interface bits onto the stock image (everything else stays stock):
+      - ./dashboard-patches/components/backtesting.py:/home/dashboard/frontend/components/backtesting.py
+      - ./dashboard-patches/pages/permissions.py:/home/dashboard/frontend/pages/permissions.py
+      - ./dashboard-patches/pages/config/scalping_breakout:/home/dashboard/frontend/pages/config/scalping_breakout
+
+  emqx:
+    container_name: hummingbot-broker
+    image: emqx:5
+    restart: unless-stopped
+    environment:
+      - EMQX_NAME=emqx
+      - EMQX_HOST=node1.emqx.local
+      - EMQX_CLUSTER__DISCOVERY_STRATEGY=static
+      - EMQX_CLUSTER__STATIC__SEEDS=[emqx@node1.emqx.local]
+      - EMQX_LOADED_PLUGINS="emqx_recon,emqx_retainer,emqx_management,emqx_dashboard"
+    volumes:
+      - emqx-data:/opt/emqx/data
+      - emqx-log:/opt/emqx/log
+      - emqx-etc:/opt/emqx/etc
+    ports:
+      - "1883:1883"
+      - "8883:8883"
+      - "8083:8083"
+      - "8084:8084"
+      - "8081:8081"
+      - "18083:18083"
+      # - "61613:61613"  # web-stomp gateway (unused; 61613 is in a Windows reserved port range)
+    networks:
+      emqx-bridge:
+        aliases:
+          - node1.emqx.local
+    healthcheck:
+      test: [ "CMD", "/opt/emqx/bin/emqx_ctl", "status" ]
+      interval: 5s
+      timeout: 25s
+      retries: 5
+
+  postgres:
+    container_name: hummingbot-postgres
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=hummingbot_api
+      - POSTGRES_USER=hbot
+      - POSTGRES_PASSWORD=hummingbot-api
+      - POSTGRES_INITDB_ARGS=--encoding=UTF8
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+    ports:
+      - "5432:5432"
+    networks:
+      - emqx-bridge
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hbot -d hummingbot_api"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+networks:
+  emqx-bridge:
+    driver: bridge
+
+volumes:
+  emqx-data: { }
+  emqx-log: { }
+  emqx-etc: { }
+  postgres-data: { }
