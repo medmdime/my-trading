@@ -14,6 +14,7 @@ COPY bots/controllers /opt/seed-bots/controllers
 COPY bots/scripts     /opt/seed-bots/scripts
 COPY bots/conf        /opt/seed-bots/conf
 
+
 COPY api-seed-entrypoint.sh /usr/local/bin/api-seed-entrypoint.sh
 RUN chmod +x /usr/local/bin/api-seed-entrypoint.sh
 
