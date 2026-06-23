@@ -12,7 +12,8 @@ services:
     # pinned to the :latest digest as of 2026-06-22 for reproducibility
     image: hummingbot/hummingbot-api:latest@sha256:4ebeed379a1f99cad8e2b1090108d44357900a4c88291488028936b56844784e
     ports:
-      - "8000:8000"
+      # host 8000 is taken by Coolify on the server — publish the API on 8002 instead
+      - "8002:8000"
     volumes:
       - ./bots:/hummingbot-api/bots               # <- MY strategies mount in here
       - /var/run/docker.sock:/var/run/docker.sock
@@ -49,12 +50,17 @@ services:
       - "8501:8501"
     environment:
       - AUTH_SYSTEM_ENABLED=False
-      - BACKEND_API_HOST=host.docker.internal
+      # reach the API over the internal docker network (robust; no host-port coupling)
+      - BACKEND_API_HOST=hummingbot-api
       - BACKEND_API_PORT=8000
       - BACKEND_API_USERNAME=admin
       - BACKEND_API_PASSWORD=admin
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    networks:
+      - emqx-bridge
+    depends_on:
+      - hummingbot-api
 
   emqx:
     container_name: hummingbot-broker
