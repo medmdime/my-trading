@@ -1,0 +1,24 @@
+id: scalping_10_testnet
+controller_name: scalping_breakout
+controller_type: directional_trading
+connector_name: hyperliquid_perpetual_testnet
+trading_pair: BTC-USD
+candles_connector: binance_perpetual
+candles_trading_pair: BTC-USDT
+interval: 15m
+range_lookback: 20
+vol_lookback: 20
+rel_volume_mult: 2.0
+total_amount_quote: 10
+leverage: 2
+position_mode: ONEWAY
+max_executors_per_side: 1
+cooldown_time: 900
+stop_loss: 0.005
+take_profit: 0.02
+time_limit: 3600
+trailing_stop:
+  activation_price: 0.003
+  trailing_delta: 0.0015
+take_profit_order_type: 2
+manual_kill_switch: false

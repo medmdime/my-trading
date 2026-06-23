@@ -25,7 +25,7 @@ get_default_config_loader("scalping_breakout")
 _defaults = {
     "connector_name": "hyperliquid_perpetual",
     "trading_pair": "BTC-USD",
-    "candles_connector_name": "hyperliquid_perpetual",
+    "candles_connector": "hyperliquid_perpetual",
     "candles_trading_pair": "BTC-USD",
     "interval": "1m",
 }
