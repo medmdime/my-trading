@@ -40,9 +40,11 @@ services:
 
   dashboard:
     container_name: dashboard
-    # upstream web UI — github.com/hummingbot/dashboard (pulled, not built)
-    # pinned to the :latest digest as of 2026-06-22 for reproducibility
-    image: hummingbot/dashboard:latest@sha256:fd28cc85ec0e8014a2cc7cf246acc932a41727dd4e6b5262d19c29a82400d80a
+    # stock web UI + MY overlays, baked in via dashboard.Dockerfile.
+    # (Bind-mounting the overlay files breaks on Coolify — see dashboard.Dockerfile.)
+    build:
+      context: .
+      dockerfile: dashboard.Dockerfile
     ports:
       - "8501:8501"
     environment:
@@ -53,11 +55,6 @@ services:
       - BACKEND_API_PASSWORD=admin
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    volumes:
-      # Overlay ONLY my interface bits onto the stock image (everything else stays stock):
-      - ./dashboard-patches/components/backtesting.py:/home/dashboard/frontend/components/backtesting.py
-      - ./dashboard-patches/pages/permissions.py:/home/dashboard/frontend/pages/permissions.py
-      - ./dashboard-patches/pages/config/scalping_breakout:/home/dashboard/frontend/pages/config/scalping_breakout
 
   emqx:
     container_name: hummingbot-broker
