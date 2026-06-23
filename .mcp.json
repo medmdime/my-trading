@@ -14,6 +14,21 @@
         "HUMMINGBOT_PASSWORD=admin",
         "hummingbot/mcp:latest"
       ]
+    },
+    "hummingbot-server": {
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "-e",
+        "HUMMINGBOT_API_URL=https://api.stylette.info",
+        "-e",
+        "HUMMINGBOT_USERNAME=admin",
+        "-e",
+        "HUMMINGBOT_PASSWORD=admin",
+        "hummingbot/mcp:latest"
+      ]
     }
   }
 }

@@ -17,15 +17,12 @@ services:
       # host 8000 is taken by Coolify on the server — publish the API on 8002 instead
       - "8002:8000"
     volumes:
-      # Code + configs (controllers, scripts, conf) are BAKED into the image so a
-      # plain `git push` deploys them. Bind-mount ONLY runtime state + secrets so
-      # they survive redeploys. Do NOT re-add a whole `./bots` mount — it would
-      # hide the baked code and bring back the "Unknown strategy" crash.
-      - ./bots/credentials:/hummingbot-api/bots/credentials
-      - ./bots/instances:/hummingbot-api/bots/instances
-      - ./bots/data:/hummingbot-api/bots/data
-      - ./bots/archived:/hummingbot-api/bots/archived
-      - ./bots/logs:/hummingbot-api/bots/logs
+      # Full bots dir is bind-mounted (persists runtime state + secrets). On
+      # Coolify it starts empty, so api.Dockerfile's entrypoint seeds the
+      # git-managed code/configs (controllers, scripts, conf) into it on startup
+      # — that's what makes `git push` deploy everything and lets the bot
+      # containers (which mount controllers/scripts from the host) find them.
+      - ./bots:/hummingbot-api/bots
       - /var/run/docker.sock:/var/run/docker.sock
       - /proc:/host/proc:ro
       - /etc/hostname:/host/disk-probe:ro
