@@ -8,14 +8,24 @@
 services:
   hummingbot-api:
     container_name: hummingbot-api
-    # upstream engine — github.com/hummingbot/hummingbot-api (pulled, not built)
-    # pinned to the :latest digest as of 2026-06-22 for reproducibility
-    image: hummingbot/hummingbot-api:latest@sha256:4ebeed379a1f99cad8e2b1090108d44357900a4c88291488028936b56844784e
+    # upstream engine + MY bot code/configs baked in via api.Dockerfile
+    # (base image pinned to a digest in that Dockerfile for reproducibility).
+    build:
+      context: .
+      dockerfile: api.Dockerfile
     ports:
       # host 8000 is taken by Coolify on the server — publish the API on 8002 instead
       - "8002:8000"
     volumes:
-      - ./bots:/hummingbot-api/bots               # <- MY strategies mount in here
+      # Code + configs (controllers, scripts, conf) are BAKED into the image so a
+      # plain `git push` deploys them. Bind-mount ONLY runtime state + secrets so
+      # they survive redeploys. Do NOT re-add a whole `./bots` mount — it would
+      # hide the baked code and bring back the "Unknown strategy" crash.
+      - ./bots/credentials:/hummingbot-api/bots/credentials
+      - ./bots/instances:/hummingbot-api/bots/instances
+      - ./bots/data:/hummingbot-api/bots/data
+      - ./bots/archived:/hummingbot-api/bots/archived
+      - ./bots/logs:/hummingbot-api/bots/logs
       - /var/run/docker.sock:/var/run/docker.sock
       - /proc:/host/proc:ro
       - /etc/hostname:/host/disk-probe:ro

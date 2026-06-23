@@ -1,0 +1,9 @@
+# Keep secrets and runtime state OUT of the Docker build context / images.
+# (Credentials are added per-environment via the dashboard, never baked.)
+**/__pycache__
+*.pyc
+bots/credentials
+bots/data
+bots/logs
+bots/instances
+bots/archived
