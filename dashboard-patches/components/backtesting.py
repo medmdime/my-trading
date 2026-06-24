@@ -39,7 +39,17 @@ def _run_backtesting_request(backend_api_client, start_time, end_time, backtesti
     config.setdefault("id", f"{config.get('controller_name', 'controller')}_backtest")
     # Swap an excluded trading-rules connector for the candles connector so the engine
     # can build trading rules (see _BACKTEST_EXCLUDED_CONNECTORS above).
-    if config.get("connector_name") in _BACKTEST_EXCLUDED_CONNECTORS:
+    #
+    # NOTE (my-trading patch): Hyperliquid is now backtestable natively — the API
+    # image injects Hyperliquid trading rules from a cached snapshot
+    # (see api-patches/backtesting_data_provider.py), and the Hyperliquid candles
+    # feed already supports the HIP-3 builder-dex markets (XYZ:SP500-USD, etc.).
+    # So we DON'T swap Hyperliquid to Binance anymore — that swap silently changed
+    # the data source (different OHLCV/volume -> different entries) and was
+    # impossible for HIP-3 markets (no Binance equivalent). The swap is kept only
+    # for the other genuinely-unsupported excluded connectors.
+    _swap_connectors = {c for c in _BACKTEST_EXCLUDED_CONNECTORS if not c.startswith("hyperliquid")}
+    if config.get("connector_name") in _swap_connectors:
         excluded = config["connector_name"]
         candles_conn = config.get("candles_connector") or config.get("candles_connector_name")
         candles_pair = config.get("candles_trading_pair")

@@ -1,0 +1,4 @@
+controllers_config:
+- scalping_10_eth.yml
+max_controller_drawdown_quote: 10.0
+script_file_name: v2_with_controllers.py

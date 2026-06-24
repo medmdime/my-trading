@@ -1,0 +1,3 @@
+controllers_config:
+- scalping_widetrail_live.yml
+script_file_name: v2_with_controllers.py

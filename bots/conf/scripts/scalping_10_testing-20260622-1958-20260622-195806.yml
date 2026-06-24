@@ -1,0 +1,3 @@
+controllers_config:
+- scalping_10_hyperliquid_0.1.yml
+script_file_name: v2_with_controllers.py

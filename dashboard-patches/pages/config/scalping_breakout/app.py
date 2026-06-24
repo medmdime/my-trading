@@ -4,6 +4,7 @@ from plotly.subplots import make_subplots
 
 from frontend.components.backtesting import backtesting_section
 from frontend.components.config_loader import get_default_config_loader
+from frontend.components.trade_viz import render_executor_analysis
 from frontend.components.save_config import render_save_config
 from frontend.pages.config.scalping_breakout.user_inputs import user_inputs
 from frontend.pages.config.utils import get_candles
@@ -80,5 +81,12 @@ if bt_results:
         render_accuracy_metrics(bt_results["results"])
         st.write("---")
         render_close_types(bt_results["results"])
+
+    # my-trading: richer trade-by-trade analysis (real candlesticks + entry/exit
+    # markers, color-coded per-trade table, selectable per-trade zoom) — same view
+    # as the Monitor Bots page, fed by this backtest's executors + candles.
+    st.write("---")
+    st.write("## 🔍 Trade-by-trade analysis")
+    render_executor_analysis(bt_results["executors"], bt_results.get("processed_data"), key_prefix="scalp_bt")
 st.write("---")
 render_save_config(st.session_state["default_config"]["id"], st.session_state["default_config"])

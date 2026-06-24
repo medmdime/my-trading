@@ -1,0 +1,3 @@
+controllers_config:
+- silver_widetrail.yml
+script_file_name: v2_with_controllers.py

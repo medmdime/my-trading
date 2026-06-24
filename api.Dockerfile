@@ -14,6 +14,18 @@ COPY bots/controllers /opt/seed-bots/controllers
 COPY bots/scripts     /opt/seed-bots/scripts
 COPY bots/conf        /opt/seed-bots/conf
 
+# --- my-trading: make the Hyperliquid HIP-3 builder-dex markets backtestable ---
+# Hummingbot excludes hyperliquid from backtesting (can't build the connector to
+# fetch trading rules in the sandbox), which blocked backtesting SP500/SILVER/
+# XYZ100 entirely. We overlay a patched data provider that injects Hyperliquid
+# trading rules from a cached snapshot of the live API, plus a patched executor
+# simulator that evaluates take-profit & trailing-stop intrabar (high/low) so
+# backtests match live exits. Candle data already works (HL feed supports HIP-3).
+ENV HB_SITE=/opt/conda/envs/hummingbot-api/lib/python3.12/site-packages/hummingbot
+ENV HL_TRADING_RULES_PATH=/opt/seed-bots/hl_trading_rules.json
+COPY api-patches/hl_trading_rules.json          /opt/seed-bots/hl_trading_rules.json
+COPY api-patches/backtesting_data_provider.py   ${HB_SITE}/strategy_v2/backtesting/backtesting_data_provider.py
+COPY api-patches/position_executor_simulator.py ${HB_SITE}/strategy_v2/backtesting/executors_simulator/position_executor_simulator.py
 
 COPY api-seed-entrypoint.sh /usr/local/bin/api-seed-entrypoint.sh
 RUN chmod +x /usr/local/bin/api-seed-entrypoint.sh
