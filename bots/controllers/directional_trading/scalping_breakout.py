@@ -5,12 +5,21 @@ when price breaks out of it on above-average volume. Exits are handled by the
 PositionExecutor via the base config (stop-loss / take-profit / trailing-stop /
 time-limit set in the dashboard).
 
-Signal (latest closed candle):
+Signal:
   * resistance = highest high of the last `range_lookback` bars (excluding current)
   * support    = lowest low  of the last `range_lookback` bars (excluding current)
   * LONG  (1)  when close > resistance AND volume > mult x average.
   * SHORT (-1) when close < support    AND volume > mult x average.
   * else FLAT (0).
+
+Which candle the signal is read from is controlled by `signal_candle_offset`:
+  * 0 (default) = the LIVE, still-forming candle -> enters intra-bar the instant
+    price crosses (maximum responsiveness, but repaints vs a closed-bar backtest;
+    a bar can poke past the level and close back inside -> live-only fake-outs).
+  * 1 = the last FULLY CLOSED candle -> enters at the next tick after a confirmed
+    breakout close. This is what a closed-bar backtest simulates, so live lines
+    up with the backtest. No repaint, fewer/later trades.
+  * N = N bars back (further delay; rarely needed).
 """
 from typing import List
 
@@ -61,6 +70,22 @@ class ScalpingBreakoutConfig(DirectionalTradingControllerConfigBase):
             "is_updatable": True,
         },
     )
+    signal_candle_offset: int = Field(
+        default=0,
+        json_schema_extra={
+            "prompt": "Signal candle offset (0 = live/forming candle, 1 = last CLOSED candle): ",
+            "prompt_on_new": True,
+            "is_updatable": True,
+        },
+    )
+
+    @field_validator("signal_candle_offset", mode="before")
+    @classmethod
+    def _validate_offset(cls, v):
+        v = 0 if v is None else int(v)
+        if v < 0:
+            raise ValueError("signal_candle_offset must be >= 0")
+        return v
 
     @field_validator("candles_connector", mode="before")
     @classmethod
@@ -76,7 +101,7 @@ class ScalpingBreakoutConfig(DirectionalTradingControllerConfigBase):
 class ScalpingBreakoutController(DirectionalTradingControllerBase):
     def __init__(self, config: ScalpingBreakoutConfig, *args, **kwargs):
         self.config = config
-        self.max_records = max(config.range_lookback, config.vol_lookback) + 20
+        self.max_records = max(config.range_lookback, config.vol_lookback) + 20 + config.signal_candle_offset
         super().__init__(config, *args, **kwargs)
 
     def get_candles_config(self) -> List[CandlesConfig]:
@@ -111,5 +136,7 @@ class ScalpingBreakoutController(DirectionalTradingControllerBase):
         df.loc[long_condition, "signal"] = 1
         df.loc[short_condition, "signal"] = -1
 
-        self.processed_data["signal"] = int(df["signal"].iloc[-1])
+        # offset 0 = forming candle (iloc[-1]); 1 = last closed candle (iloc[-2]); N = N bars back.
+        idx = -1 - self.config.signal_candle_offset
+        self.processed_data["signal"] = int(df["signal"].iloc[idx]) if len(df) >= abs(idx) else 0
         self.processed_data["features"] = df
