@@ -201,46 +201,58 @@ def _f(v, d=0.0):
 
 
 def fills_to_positions(trades):
-    """Pair OPEN/CLOSE fills (TradeFill rows) into round-trip positions, FIFO per pair.
+    """Reconstruct round-trip positions from TradeFill rows by NET INVENTORY per pair.
 
     Live bots don't populate the Executors table (that flushes on archive), but
-    every fill lands in TradeFill. We reconstruct closed positions from OPEN->CLOSE
-    fills so live trades render in the same viz as archived/backtest executors.
-    Returns dicts in the normalize_executor() shape. close_type is "LIVE" because
-    the exit reason isn't recorded in fills (only in the archived Executors table).
+    every fill lands in TradeFill. We can't rely on the `position` OPEN/CLOSE flag —
+    Hyperliquid tags every fill "OPEN" — so we track signed inventory: a position
+    runs from when inventory leaves 0 until it returns to 0. Same-direction fills
+    extend the entry (DCA / partial fills); opposite-direction fills reduce it, and
+    the position closes when the closing quantity covers the open quantity.
+
+    Returns dicts in the normalize_executor() shape. close_type is "LIVE" (the exit
+    reason — STOP_LOSS / TRAILING_STOP / … — is only in the archived Executors table);
+    still-open positions are flagged "OPEN". PnL is computed from fill prices & fees.
     """
-    from collections import defaultdict, deque
+    from collections import defaultdict
     by_pair = defaultdict(list)
     for t in trades:
         by_pair[t.get("trading_pair")].append(t)
     out = []
     for pair, fills in by_pair.items():
         fills = sorted(fills, key=lambda x: x.get("timestamp") or 0)
-        open_q = deque()
+        cur = None  # the position currently being built
         for f in fills:
-            pos = (f.get("position") or "").upper()
-            side = (f.get("trade_type") or "").upper()
+            buy = (f.get("trade_type") or "").upper() == "BUY"
             price, amt = _f(f.get("price")), _f(f.get("amount"))
             fee = _f(f.get("cum_fees_in_quote") or f.get("trade_fee_in_quote"))
             ts = (f.get("timestamp") or 0) / 1000.0  # ms -> s
-            if pos == "CLOSE" and open_q:
-                remaining, exit_fee = amt, fee
-                while remaining > 1e-9 and open_q:
-                    o = open_q[0]
-                    use = min(remaining, o["amt"])
-                    frac = use / amt if amt else 1.0
-                    ofrac = use / o["amt0"] if o["amt0"] else 1.0
-                    sign = 1 if o["side"] == "BUY" else -1  # long if opened with a BUY
-                    pnl = sign * (price - o["price"]) * use - o["fee"] * ofrac - exit_fee * frac
-                    out.append(_pos_dict(pair, o["side"], o["ts"], ts, o["price"], price, use, pnl))
-                    o["amt"] -= use
-                    remaining -= use
-                    if o["amt"] <= 1e-9:
-                        open_q.popleft()
-            else:  # OPEN (or an unmatched fill we treat as a new leg)
-                open_q.append({"ts": ts, "price": price, "amt": amt, "amt0": amt, "side": side, "fee": fee})
-        for o in open_q:  # still-open positions: show with no exit yet
-            out.append(_pos_dict(pair, o["side"], o["ts"], None, o["price"], o["price"], o["amt"], None,
+            if amt <= 0:
+                continue
+            if cur is None:  # opens a new position in the fill's direction
+                cur = {"side": "BUY" if buy else "SELL", "open_ts": ts, "close_ts": ts,
+                       "eq": amt, "en": price * amt, "xq": 0.0, "xn": 0.0, "fees": fee}
+                continue
+            if (cur["side"] == "BUY") == buy:  # same direction -> extend entry
+                cur["eq"] += amt
+                cur["en"] += price * amt
+                cur["fees"] += fee
+            else:  # opposite -> reduce / close
+                cur["xq"] += amt
+                cur["xn"] += price * amt
+                cur["fees"] += fee
+                cur["close_ts"] = ts
+                if cur["xq"] >= cur["eq"] - 1e-9:  # fully closed
+                    entry = cur["en"] / cur["eq"]
+                    exit_px = cur["xn"] / cur["xq"]
+                    sign = 1 if cur["side"] == "BUY" else -1
+                    pnl = sign * (exit_px - entry) * cur["eq"] - cur["fees"]
+                    out.append(_pos_dict(pair, cur["side"], cur["open_ts"], cur["close_ts"],
+                                         entry, exit_px, cur["eq"], pnl))
+                    cur = None
+        if cur is not None:  # still open (no full exit yet)
+            entry = cur["en"] / cur["eq"]
+            out.append(_pos_dict(pair, cur["side"], cur["open_ts"], None, entry, entry, cur["eq"], None,
                                  close_type="OPEN"))
     out.sort(key=lambda e: e["timestamp"])
     return out
