@@ -209,8 +209,18 @@ def _render_comparison_result():
     tol_s = st.session_state.get("cmp_tol", 1800)
     bt = [normalize_executor(e) for e in result.get("executors", []) if e.get("close_timestamp")]
     if not bt:
-        st.warning("Backtest produced no trades in this window — nothing to compare. "
-                   "Widen the window or lower the volume filter.")
+        # Distinguish "candles failed to load" (Hyperliquid throttling — transient)
+        # from a genuine "strategy took no trades". Empty processed_data == no data.
+        if len(result.get("processed_data", []) or []) == 0:
+            st.error("⚠️ The backtest got NO candle data (Hyperliquid is rate-limiting "
+                     "the public candle feed) — this is transient, not 'no trades'. "
+                     "Click **Run comparison** again in a few seconds. The API retries "
+                     "automatically, so a repeat usually succeeds.")
+        else:
+            st.warning("Candles loaded, but the backtest took no trades in this window. "
+                       "Live likely entered on the forming (repainting) candle while the "
+                       "closed-bar backtest didn't — widen the window or compare a "
+                       "closed-candle (signal_candle_offset=1) variant.")
     res_meta = result.get("results", {})
 
     # headline metrics: live vs backtest

@@ -9,6 +9,7 @@ def public_pages():
     return {
         "Config Generator": [
             st.Page("frontend/pages/config/scalping_breakout/app.py", title="Scalping Breakout", icon="🚀", url_path="scalping_breakout"),
+            st.Page("frontend/pages/config/scalping_breakout_filtered/app.py", title="Scalping Breakout (Filtered)", icon="🎯", url_path="scalping_breakout_filtered"),
             st.Page("frontend/pages/config/auto_tune/app.py", title="Auto-Tune", icon="🎛️", url_path="auto_tune"),
         ],
         "Data": [

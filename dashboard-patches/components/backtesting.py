@@ -124,9 +124,17 @@ def backtesting_section(inputs, backend_api_client):
             st.error(f"Backtesting failed: {backtesting_results['error']}")
             return None
         if len(backtesting_results["processed_data"]) == 0:
-            st.error("No trades were executed during the backtesting period.")
+            # Empty processed_data means the candle feed returned NO data — almost
+            # always Hyperliquid throttling the public candle endpoint, NOT an
+            # absence of trades. The API now retries on empty; if it still fails,
+            # just run it again in a moment.
+            st.error("⚠️ No candle data was returned for this window — Hyperliquid is "
+                     "likely rate-limiting the public candle feed (this is transient, "
+                     "not 'no trades'). Wait a few seconds and click Run Backtesting again.")
             return None
         if len(backtesting_results["executors"]) == 0:
-            st.error("No executors were found during the backtesting period.")
+            st.warning("Candles loaded fine, but the strategy took no trades in this "
+                       "window (no breakout + volume signal). Try a wider window or a "
+                       "lower volume multiple.")
             return None
         return backtesting_results

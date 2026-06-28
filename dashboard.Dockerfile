@@ -11,6 +11,7 @@ COPY dashboard-patches/components/trade_viz.py   /home/dashboard/frontend/compon
 COPY dashboard-patches/components/auto_tune.py   /home/dashboard/frontend/components/auto_tune.py
 COPY dashboard-patches/pages/permissions.py     /home/dashboard/frontend/pages/permissions.py
 COPY dashboard-patches/pages/config/scalping_breakout /home/dashboard/frontend/pages/config/scalping_breakout
+COPY dashboard-patches/pages/config/scalping_breakout_filtered /home/dashboard/frontend/pages/config/scalping_breakout_filtered
 COPY dashboard-patches/pages/config/auto_tune /home/dashboard/frontend/pages/config/auto_tune
 
 # my-trading: trade-analysis interface — new "Monitor Bots" page + color/WR on the Instances tab

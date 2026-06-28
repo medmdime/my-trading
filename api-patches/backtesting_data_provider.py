@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import os
@@ -160,13 +161,41 @@ class BacktestingDataProvider(MarketDataProvider):
         # Create a new feed or restart the existing one with updated max_records
         candle_feed = CandlesFactory.get_candle(config)
         candles_buffer = config.max_records * CandlesBase.interval_to_seconds[config.interval]
-        candles_df = await candle_feed.get_historical_candles(config=HistoricalCandlesConfig(
+        hist_config = HistoricalCandlesConfig(
             connector_name=config.connector,
             trading_pair=config.trading_pair,
             interval=config.interval,
             start_time=self.start_time - candles_buffer,
             end_time=self.end_time,
-        ))
+        )
+        # --- PATCH (my-trading) ---
+        # Hyperliquid's public candle endpoint intermittently returns an EMPTY
+        # snapshot when called repeatedly (IP weight-based rate limiting). The
+        # backtest engine then runs over zero candles and silently produces 0
+        # trades -> the dashboard reports "no trades in this window" and the
+        # Compare-vs-Live view has nothing to compare even though the strategy
+        # would have traded. Empty candles are a TRANSIENT data failure, not a
+        # real "no signal" result, so retry with backoff until we get data.
+        candles_df = await candle_feed.get_historical_candles(config=hist_config)
+        attempts = int(os.environ.get("BACKTEST_CANDLE_RETRIES", "5"))
+        delay = 1.5
+        for attempt in range(attempts):
+            if candles_df is not None and not candles_df.empty:
+                break
+            logger.warning(
+                f"Empty candles for {config.connector} {config.trading_pair} "
+                f"{config.interval} (attempt {attempt + 1}/{attempts}); "
+                f"Hyperliquid likely throttling — retrying in {delay:.1f}s"
+            )
+            await asyncio.sleep(delay)
+            delay = min(delay * 1.6, 8.0)
+            candles_df = await candle_feed.get_historical_candles(config=hist_config)
+        if candles_df is None or candles_df.empty:
+            logger.error(
+                f"Still no candles for {config.connector} {config.trading_pair} "
+                f"{config.interval} after {attempts} attempts — backtest will be empty."
+            )
+        # --- END PATCH ---
         # TODO: fix pandas-ta improper float index slicing to allow us to use float indexes
         # candles_df = self.ensure_epoch_index(candles_df)
         self.candles_feeds[key] = candles_df
