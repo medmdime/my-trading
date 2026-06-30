@@ -34,7 +34,8 @@ off this controller is byte-for-byte equivalent to scalping_breakout.
   * 1 = the last FULLY CLOSED candle (lines up with the backtest, no repaint);
   * N = N bars back.
 """
-from typing import List
+import math
+from typing import List, Optional
 
 import pandas as pd
 from pydantic import Field, field_validator
@@ -45,6 +46,15 @@ from hummingbot.strategy_v2.controllers.directional_trading_controller_base impo
     DirectionalTradingControllerBase,
     DirectionalTradingControllerConfigBase,
 )
+
+
+def _safe_float(v) -> Optional[float]:
+    """Coerce to float, returning None for NaN/inf/garbage so the value is JSON-safe."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return None if math.isnan(f) or math.isinf(f) else f
 
 
 class ScalpingBreakoutFilteredConfig(DirectionalTradingControllerConfigBase):
@@ -254,3 +264,72 @@ class ScalpingBreakoutFilteredController(DirectionalTradingControllerBase):
         idx = -1 - self.config.signal_candle_offset
         self.processed_data["signal"] = int(df["signal"].iloc[idx]) if len(df) >= abs(idx) else 0
         self.processed_data["features"] = df
+
+    def get_custom_info(self) -> dict:
+        """Expose the latest per-tick decision (incl. filter state) so the dashboard
+        can show WHAT the bot saw and WHY it did or didn't trade. Published every tick
+        by v2_with_controllers. Purely additive and fully guarded — never raises.
+        """
+        info: dict = {}
+        try:
+            base = super().get_custom_info()
+            if isinstance(base, dict):
+                info.update(base)
+        except Exception:
+            pass
+        try:
+            c = self.config
+            df = self.processed_data.get("features")
+            if df is None or len(df) == 0:
+                return info
+            idx = -1 - c.signal_candle_offset
+            row = df.iloc[idx] if len(df) >= abs(idx) else df.iloc[-1]
+
+            close = _safe_float(row.get("close"))
+            res = _safe_float(row.get("resistance"))
+            sup = _safe_float(row.get("support"))
+            rel_vol = _safe_float(row.get("rel_vol"))
+            final_signal = int(self.processed_data.get("signal", 0))
+
+            # Unfiltered breakout direction (before the trend/RSI gates).
+            base_dir = 0
+            if rel_vol is not None and rel_vol > c.rel_volume_mult and close is not None:
+                if res is not None and close > res:
+                    base_dir = 1
+                elif sup is not None and close < sup:
+                    base_dir = -1
+
+            # If the breakout fired but the final signal is flat, name the filter(s) that vetoed it.
+            blocked = []
+            if base_dir != 0 and final_signal == 0:
+                if c.trend_filter_enabled and "trend_ma" in row:
+                    ma = _safe_float(row.get("trend_ma"))
+                    if ma is not None and close is not None and (
+                        (base_dir == 1 and not close > ma) or (base_dir == -1 and not close < ma)
+                    ):
+                        blocked.append("trend")
+                if c.rsi_filter_enabled and "rsi" in row:
+                    rsi = _safe_float(row.get("rsi"))
+                    if rsi is not None and (
+                        (base_dir == 1 and not rsi < c.rsi_overbought)
+                        or (base_dir == -1 and not rsi > c.rsi_oversold)
+                    ):
+                        blocked.append("rsi")
+
+            info.update({
+                "signal": final_signal,
+                "base_signal": base_dir,
+                "close": close,
+                "resistance": res,
+                "support": sup,
+                "rel_vol": rel_vol,
+                "rel_volume_mult": _safe_float(c.rel_volume_mult),
+                "signal_candle_offset": int(c.signal_candle_offset),
+                "ts": _safe_float(row.get("timestamp")),
+                "trend_ma": _safe_float(row.get("trend_ma")) if "trend_ma" in row else None,
+                "rsi": _safe_float(row.get("rsi")) if "rsi" in row else None,
+                "blocked_by": ",".join(blocked) if blocked else None,
+            })
+        except Exception:
+            pass
+        return info

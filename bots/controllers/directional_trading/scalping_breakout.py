@@ -21,7 +21,8 @@ Which candle the signal is read from is controlled by `signal_candle_offset`:
     up with the backtest. No repaint, fewer/later trades.
   * N = N bars back (further delay; rarely needed).
 """
-from typing import List
+import math
+from typing import List, Optional
 
 from pydantic import Field, field_validator
 from pydantic_core.core_schema import ValidationInfo
@@ -31,6 +32,15 @@ from hummingbot.strategy_v2.controllers.directional_trading_controller_base impo
     DirectionalTradingControllerBase,
     DirectionalTradingControllerConfigBase,
 )
+
+
+def _safe_float(v) -> Optional[float]:
+    """Coerce to float, returning None for NaN/inf/garbage so the value is JSON-safe."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return None if math.isnan(f) or math.isinf(f) else f
 
 
 class ScalpingBreakoutConfig(DirectionalTradingControllerConfigBase):
@@ -140,3 +150,34 @@ class ScalpingBreakoutController(DirectionalTradingControllerBase):
         idx = -1 - self.config.signal_candle_offset
         self.processed_data["signal"] = int(df["signal"].iloc[idx]) if len(df) >= abs(idx) else 0
         self.processed_data["features"] = df
+
+    def get_custom_info(self) -> dict:
+        """Expose the latest per-tick decision so the dashboard can watch the bot
+        think in real time. Published every tick via v2_with_controllers' performance
+        report. Purely additive and fully guarded — never raises into the trading loop.
+        """
+        info: dict = {}
+        try:
+            base = super().get_custom_info()
+            if isinstance(base, dict):
+                info.update(base)
+        except Exception:
+            pass
+        try:
+            df = self.processed_data.get("features")
+            if df is not None and len(df) > 0:
+                idx = -1 - self.config.signal_candle_offset
+                row = df.iloc[idx] if len(df) >= abs(idx) else df.iloc[-1]
+                info.update({
+                    "signal": int(self.processed_data.get("signal", 0)),
+                    "close": _safe_float(row.get("close")),
+                    "resistance": _safe_float(row.get("resistance")),
+                    "support": _safe_float(row.get("support")),
+                    "rel_vol": _safe_float(row.get("rel_vol")),
+                    "rel_volume_mult": _safe_float(self.config.rel_volume_mult),
+                    "signal_candle_offset": int(self.config.signal_candle_offset),
+                    "ts": _safe_float(row.get("timestamp")),
+                })
+        except Exception:
+            pass
+        return info

@@ -69,6 +69,21 @@ services:
     depends_on:
       - hummingbot-api
 
+  react-dashboard:
+    container_name: react-dashboard
+    # NEW React UI (replaces Streamlit at stylette.info). nginx serves the static
+    # build and proxies /api + /ws to hummingbot-api over the internal network,
+    # injecting Basic auth (see react-dashboard/nginx.conf).
+    build:
+      context: ./react-dashboard
+      dockerfile: Dockerfile
+    ports:
+      - "8090:80"
+    networks:
+      - emqx-bridge
+    depends_on:
+      - hummingbot-api
+
   emqx:
     container_name: hummingbot-broker
     image: emqx:5@sha256:c944155b31330c235c6547a3c8b791464e243d4c1ffbdc487a7ea07e94b884f4

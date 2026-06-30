@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -69,6 +70,44 @@ def _build_trading_rules_from_cache(connector_name: str) -> Dict[str, TradingRul
     if not rules:
         logger.warning(f"No cached trading rules available for excluded connector '{connector_name}'.")
     return rules
+
+
+# --- PATCH (my-trading): persistent candle cache -------------------------------
+# Hyperliquid's public candle endpoint is IP-weight rate-limited (HTTP 429) and
+# that limit is SHARED with the live bots' connector on the same server IP, so a
+# burst of backtests can starve live trading. We cache each fetched window to
+# disk keyed by (connector, pair, interval, window) so a given window is pulled
+# from Hyperliquid exactly once and then reused forever — the Compare view (which
+# re-runs the SAME window) and repeated backtests then cost ZERO HL requests.
+_CANDLE_CACHE_DIR = os.environ.get("CANDLE_CACHE_DIR", "/hummingbot-api/bots/.candle_cache")
+
+
+def _candle_cache_path(connector: str, trading_pair: str, interval: str, start, end) -> str:
+    key = f"{connector}|{trading_pair}|{interval}|{int(start)}|{int(end)}"
+    digest = hashlib.md5(key.encode()).hexdigest()[:16]
+    safe_pair = trading_pair.replace("/", "-").replace(":", "-")
+    return os.path.join(_CANDLE_CACHE_DIR, f"{connector}_{safe_pair}_{interval}_{digest}.pkl")
+
+
+def _read_candle_cache(path: str):
+    try:
+        if os.path.exists(path):
+            df = pd.read_pickle(path)
+            if df is not None and not df.empty:
+                logger.info(f"Candle cache HIT: {path} ({len(df)} rows)")
+                return df
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning(f"Candle cache read failed ({path}): {e}")
+    return None
+
+
+def _write_candle_cache(path: str, df) -> None:
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        df.to_pickle(path)
+        logger.info(f"Candle cache WRITE: {path} ({len(df)} rows)")
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning(f"Candle cache write failed ({path}): {e}")
 # --- END PATCH -----------------------------------------------------------------
 
 

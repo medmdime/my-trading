@@ -1,0 +1,14 @@
+# Pre-seeded Condor config. admin_id + the admin user are filled from the
+# ADMIN_USER_ID env var on load. This just points Condor at the Hummingbot API
+# over the shared docker network so the dashboard has data on first run.
+servers:
+  stylette:
+    host: hummingbot-api
+    port: 8000
+    username: admin
+    password: admin
+default_server: stylette
+users: {}
+server_access: {}
+chat_defaults: {}
+user_preferences: {}
