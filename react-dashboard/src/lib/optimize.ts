@@ -106,8 +106,15 @@ export interface Candidate {
   totalTrades: number
   overfitGap: number // spread of rar across folds; large = fragile
   origin: "search" | "refine" | "surface" | "centroid"
-  /** Score on the held-out most-recent window the search never optimizes against. */
+  /** Score on the held-out window used to SELECT finalists (never optimized against). */
   holdout: FoldScore
+  /** Score on the final confirmation window — only consulted for holdout passers,
+   * so a lucky holdout can't survive on its own. */
+  confirm: FoldScore
+  /** Passed all three tiers: green in every train fold, green holdout, green confirm. */
+  passed: boolean
+  /** Which search round produced it (rounds widen the ranges). */
+  round: number
 }
 
 export interface OptimizeOpts {
@@ -115,8 +122,10 @@ export interface OptimizeOpts {
   folds: number
   minTradesPerFold: number
   sizeQuote: number
-  /** Fraction of the most-recent window reserved as the unseen final exam (default 0.25). */
+  /** Fraction reserved as the selection holdout (default 0.2). */
   holdoutFrac?: number
+  /** Fraction (most recent) reserved as the final confirmation exam (default 0.2). */
+  confirmFrac?: number
   /** Parallel engine calls (default 4). */
   concurrency?: number
 }
@@ -198,10 +207,15 @@ export async function runOptimize(
   opts: OptimizeOpts,
   runEngine: EngineRun,
   onProgress?: (done: number, total: number) => void,
+  round = 1,
 ): Promise<Candidate[]> {
-  const holdoutFrac = opts.holdoutFrac ?? 0.25
-  const searchEnd = window.startTs + (window.endTs - window.startTs) * (1 - holdoutFrac)
-  const searchSpan = searchEnd - window.startTs
+  // Three-way time split: train folds -> selection holdout -> final confirmation.
+  const span = window.endTs - window.startTs
+  const holdoutFrac = opts.holdoutFrac ?? 0.2
+  const confirmFrac = opts.confirmFrac ?? 0.2
+  const confirmStart = window.endTs - span * confirmFrac
+  const holdoutStart = confirmStart - span * holdoutFrac
+  const searchSpan = holdoutStart - window.startTs
   const foldEdges: Array<[number, number]> = []
   for (let i = 0; i < opts.folds; i++) {
     foldEdges.push([
@@ -209,6 +223,7 @@ export async function runOptimize(
       window.startTs + (searchSpan * (i + 1)) / opts.folds,
     ])
   }
+  const minHold = Math.max(1, Math.floor(opts.minTradesPerFold / 2))
 
   let done = 0
   const total = opts.samples + 2
@@ -227,24 +242,38 @@ export async function runOptimize(
       scoreTrades(trades.filter((t) => t.ts >= a && t.ts < b), opts.sizeQuote, opts.minTradesPerFold),
     )
     const holdout = scoreTrades(
-      trades.filter((t) => t.ts >= searchEnd),
+      trades.filter((t) => t.ts >= holdoutStart && t.ts < confirmStart),
       opts.sizeQuote,
-      Math.max(1, Math.floor(opts.minTradesPerFold / 2)),
+      minHold,
+    )
+    const confirm = scoreTrades(
+      trades.filter((t) => t.ts >= confirmStart),
+      opts.sizeQuote,
+      minHold,
     )
     const rars = folds.map((f) => f.rar)
+    const robust = Math.min(...rars)
     cands.push({
       config,
       vals: v,
       folds,
-      robust: Math.min(...rars),
+      robust,
       totalPnl: folds.reduce((s, f) => s + f.netPnl, 0),
       totalTrades: folds.reduce((s, f) => s + f.trades, 0),
       overfitGap: Math.max(...rars) - Math.min(...rars),
       origin,
       holdout,
+      confirm,
+      passed:
+        robust > 0 &&
+        holdout.netPnl > 0 &&
+        holdout.trades >= minHold &&
+        confirm.netPnl > 0 &&
+        confirm.trades >= 1,
+      round,
     })
     sampleVals.push(v)
-    scores.push(Number.isFinite(rars.length ? Math.min(...rars) : NaN) ? Math.min(...rars) : -999)
+    scores.push(Number.isFinite(robust) ? robust : -999)
   }
 
   const pool = async (jobs: Array<() => Promise<void>>) => {
@@ -302,4 +331,68 @@ export async function runOptimize(
   }
 
   return cands.sort((a, b) => b.robust - a.robust)
+}
+
+// --- multi-round: keep searching until a config passes all three tiers -------
+
+/** Widen every range around its center by `factor`, clamped so values stay
+ * meaningful (positive, ints >= 2, fractions <= 60%). */
+export function widenRanges(original: ParamRange[], factor: number): ParamRange[] {
+  return original.map((r) => {
+    const span = r.max - r.min
+    const grow = (span * (factor - 1)) / 2
+    let min = r.min - grow
+    let max = r.max + grow
+    if (r.int) {
+      min = Math.max(2, Math.round(min))
+      max = Math.round(max)
+    } else {
+      min = Math.max(r.min * 0.25, min, 1e-4)
+      max = Math.min(max, 0.6)
+    }
+    return { ...r, min, max }
+  })
+}
+
+export interface RoundsResult {
+  status: "found" | "exhausted"
+  /** Every candidate from every round, passers first then by robust. */
+  candidates: Candidate[]
+  roundsRun: number
+}
+
+/**
+ * Round loop: search -> if any candidate passes train folds + holdout + the
+ * final confirmation window, stop and return; otherwise widen the parameter
+ * ranges 20% and search again. Bounded by maxRounds so "iterate until green"
+ * can't degenerate into selecting on noise — if nothing passes, the honest
+ * answer is that this pair/window has no robust edge.
+ */
+export async function runOptimizeRounds(
+  base: Cfg,
+  ranges: ParamRange[],
+  window: { startTs: number; endTs: number },
+  opts: OptimizeOpts,
+  maxRounds: number,
+  runEngine: EngineRun,
+  onProgress?: (round: number, done: number, total: number) => void,
+): Promise<RoundsResult> {
+  const all: Candidate[] = []
+  for (let round = 1; round <= maxRounds; round++) {
+    const r = round === 1 ? ranges : widenRanges(ranges, 1 + 0.2 * (round - 1))
+    const cands = await runOptimize(
+      base, r, window, opts, runEngine,
+      (done, total) => onProgress?.(round, done, total),
+      round,
+    )
+    all.push(...cands)
+    if (cands.some((c) => c.passed)) break
+  }
+  const roundsRun = all.length ? all[all.length - 1].round : 0
+  all.sort((a, b) => {
+    if (a.passed !== b.passed) return a.passed ? -1 : 1
+    if (a.passed && b.passed) return b.holdout.netPnl + b.confirm.netPnl - (a.holdout.netPnl + a.confirm.netPnl)
+    return b.robust - a.robust
+  })
+  return { status: all.some((c) => c.passed) ? "found" : "exhausted", candidates: all, roundsRun }
 }

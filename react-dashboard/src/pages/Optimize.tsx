@@ -10,7 +10,7 @@ import {
 } from "@/lib/api"
 import { fmtNum, fmtUsd, pnlColor } from "@/lib/format"
 import { normalizeExecutor, processedToRows, type Trade } from "@/lib/trades"
-import { DEFAULT_RANGES, runOptimize, type Candidate } from "@/lib/optimize"
+import { DEFAULT_RANGES, runOptimizeRounds, type Candidate, type RoundsResult } from "@/lib/optimize"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -58,14 +58,19 @@ export function Optimize() {
   const configs = useQuery({ queryKey: ["allConfigs"], queryFn: getAllControllerConfigs })
 
   const [baseId, setBaseId] = React.useState("")
-  const [days, setDays] = React.useState(21)
+  const [days, setDays] = React.useState(30)
   const [folds, setFolds] = React.useState(3)
   const [samples, setSamples] = React.useState(150)
   const [minTrades, setMinTrades] = React.useState(2)
+  const [maxRounds, setMaxRounds] = React.useState(4)
 
   const [running, setRunning] = React.useState(false)
-  const [progress, setProgress] = React.useState<{ done: number; total: number }>({ done: 0, total: 1 })
-  const [results, setResults] = React.useState<Candidate[] | null>(null)
+  const [progress, setProgress] = React.useState<{ round: number; done: number; total: number }>({
+    round: 1,
+    done: 0,
+    total: 1,
+  })
+  const [results, setResults] = React.useState<RoundsResult | null>(null)
   const [err, setErr] = React.useState<string | null>(null)
   const [selected, setSelected] = React.useState<number | null>(null)
 
@@ -77,14 +82,14 @@ export function Optimize() {
     setErr(null)
     setResults(null)
     setSelected(null)
-    setProgress({ done: 0, total: samples + 2 })
+    setProgress({ round: 1, done: 0, total: samples + 2 })
     try {
       const now = Math.floor(Date.now() / 1000)
       const start = now - days * 86400
       // Warm the server's candle cache with one solo run before fanning out —
       // parallel first-hits all fetching candles at once is what trips the throttle.
       await engineTrades(cfg as Record<string, unknown>, start, now)
-      const res = await runOptimize(
+      const res = await runOptimizeRounds(
         cfg as Record<string, unknown>,
         DEFAULT_RANGES,
         { startTs: start, endTs: now },
@@ -97,10 +102,11 @@ export function Optimize() {
           // once per window — the warmup call pays it, the rest run parallel.
           concurrency: 4,
         },
+        Math.max(1, maxRounds),
         (c) => engineTrades(c, start, now),
-        (done, total) => setProgress({ done, total }),
+        (round, done, total) => setProgress({ round, done, total }),
       )
-      if (!res.length) throw new Error("Every engine run failed — the backtest API may be down.")
+      if (!res.candidates.length) throw new Error("Every engine run failed — the backtest API may be down.")
       setResults(res)
     } catch (e) {
       setErr((e as Error).message)
@@ -109,7 +115,8 @@ export function Optimize() {
     }
   }
 
-  const top = (results ?? []).slice(0, 10)
+  const top = (results?.candidates ?? []).slice(0, 10)
+  const passers = (results?.candidates ?? []).filter((c) => c.passed)
   const pctDone = Math.round((progress.done / Math.max(1, progress.total)) * 100)
 
   return (
@@ -117,11 +124,13 @@ export function Optimize() {
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Config Optimizer</h1>
         <p className="text-sm text-muted-foreground">
-          Every candidate runs through the <b>real backtest engine</b> — the same one Hummingbot
-          uses — scored by <b>risk-adjusted return</b> across <b>walk-forward folds</b>, with the
-          most recent 25% held out as an unseen final exam. Risk/reward is constrained (TP ≥ SL,
-          trailing must be able to arm), so no nonsense configs. Slower than a local sim, but every
-          number is the engine's.
+          Every candidate runs through the <b>real backtest engine</b>. A config only wins by
+          passing <b>three tiers of unseen data</b>: green in every walk-forward fold → green on the
+          selection <b>holdout</b> → green on the final <b>confirmation</b> window (consulted only
+          for holdout passers, so a lucky holdout can't survive alone). If a round finds no passer,
+          the search <b>widens and iterates</b> — up to your round budget. If nothing passes, that's
+          the honest answer: no robust edge on this pair/window, and no amount of re-rolling should
+          make you deploy one.
         </p>
       </div>
 
@@ -153,14 +162,19 @@ export function Optimize() {
           <Field label="Min trades / fold">
             <NumInput value={minTrades} onChange={(v) => setMinTrades(Math.max(0, v))} />
           </Field>
-          <div className="flex items-end lg:col-span-6">
+          <Field label="Max rounds">
+            <NumInput value={maxRounds} onChange={(v) => setMaxRounds(Math.max(1, Math.min(10, v)))} />
+          </Field>
+          <div className="flex items-end lg:col-span-5">
             <Button size="sm" disabled={!cfg || running} onClick={run}>
-              {running ? `Optimizing… ${progress.done}/${progress.total} runs` : "Run optimizer"}
+              {running
+                ? `Round ${progress.round}/${maxRounds} · ${progress.done}/${progress.total} runs`
+                : "Run optimizer"}
             </Button>
             {cfg && !running && (
               <span className="ml-3 text-xs text-muted-foreground">
-                {samples} real engine runs, 4 in parallel (fast once the server's candle cache is
-                warm) on {cfg.trading_pair} {cfg.interval}, last {days}d · offset forced to 1
+                Up to {maxRounds} rounds × {samples} engine runs on {cfg.trading_pair} {cfg.interval},
+                last {days}d — stops early at the first all-tier passer · offset forced to 1
               </span>
             )}
           </div>
@@ -182,10 +196,26 @@ export function Optimize() {
         <Card>
           <CardHeader>
             <CardTitle className="text-sm">
-              Top configs by robust (worst-fold) risk-adjusted return — all engine numbers
+              {results.status === "found"
+                ? `✓ Found ${passers.length} config${passers.length > 1 ? "s" : ""} passing all three tiers (round ${results.roundsRun})`
+                : `No config passed all tiers after ${results.roundsRun} round${results.roundsRun > 1 ? "s" : ""}`}
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
+            {results.status === "found" ? (
+              <div className="rounded-md border-l-2 border-emerald-500 bg-emerald-500/5 p-3 text-xs">
+                These configs were <b>green in every train fold, green on the unseen holdout, AND
+                green on the final confirmation window</b> — the strongest evidence this process can
+                produce. Next step: deploy small and treat the first live week as the real exam.
+              </div>
+            ) : (
+              <div className="rounded-md border-l-2 border-amber-500 bg-amber-500/5 p-3 text-xs">
+                The search widened {results.roundsRun}× and still found nothing that makes money on
+                the unseen windows — <b>this pair/window has no robust breakout edge right now</b>.
+                Deploying the "least bad" row would just fund the market. Try another pair, a wider
+                window, or wait for the regime to change.
+              </div>
+            )}
             <div className="overflow-auto rounded-md border text-xs">
               <table className="w-full">
                 <thead className="bg-muted/40 text-muted-foreground">
@@ -198,7 +228,7 @@ export function Optimize() {
                     <th className="px-2 py-1.5 text-right font-medium">Total PnL</th>
                     <th className="px-2 py-1.5 text-right font-medium">Trades</th>
                     <th className="px-2 py-1.5 text-right font-medium">Holdout</th>
-                    <th className="px-2 py-1.5 text-right font-medium">Overfit gap</th>
+                    <th className="px-2 py-1.5 text-right font-medium">Confirm</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -206,16 +236,24 @@ export function Optimize() {
                     const g = c.config
                     const ts = g.trailing_stop as { activation_price?: number; trailing_delta?: number } | undefined
                     const ob = originBadge[c.origin]
-                    const fragile = c.overfitGap > Math.abs(c.robust) * 2 + 1
+                    // Only reveal the confirmation score for holdout passers —
+                    // consulting it for everything would turn the final exam
+                    // into training data.
+                    const holdoutPass = c.robust > 0 && c.holdout.netPnl > 0
                     return (
                       <tr
                         key={i}
-                        className={`cursor-pointer border-t hover:bg-muted/50 ${selected === i ? "bg-muted/60" : ""}`}
+                        className={`cursor-pointer border-t hover:bg-muted/50 ${selected === i ? "bg-muted/60" : ""} ${c.passed ? "bg-emerald-500/5" : ""}`}
                         onClick={() => setSelected(selected === i ? null : i)}
                       >
-                        <td className="px-2 py-1.5">{i + 1}</td>
+                        <td className="px-2 py-1.5">
+                          {c.passed ? <Badge className="bg-emerald-600 text-white text-[10px]">✓ {i + 1}</Badge> : i + 1}
+                        </td>
                         <td className="px-2 py-1.5">
                           <Badge className={`text-[10px] ${ob.cls}`}>{ob.label}</Badge>
+                          {c.round > 1 && (
+                            <span className="ml-1 text-[10px] text-muted-foreground">r{c.round}</span>
+                          )}
                         </td>
                         <td className="px-2 py-1.5 font-mono tabular-nums">
                           {String(g.range_lookback)}/{String(g.vol_lookback)} ·{" "}
@@ -240,13 +278,15 @@ export function Optimize() {
                         <td className="px-2 py-1.5 text-right tabular-nums">{c.totalTrades}</td>
                         <td
                           className={`px-2 py-1.5 text-right tabular-nums ${pnlColor(c.holdout.netPnl)}`}
-                          title="PnL on the most-recent window the search never optimized against"
+                          title="PnL on the unseen selection window"
                         >
                           {fmtUsd(c.holdout.netPnl)} ({c.holdout.trades}t)
                         </td>
-                        <td className={`px-2 py-1.5 text-right tabular-nums ${fragile ? "text-red-500" : "text-muted-foreground"}`}>
-                          {fmtNum(c.overfitGap, 2)}
-                          {fragile ? " ⚠" : ""}
+                        <td
+                          className={`px-2 py-1.5 text-right tabular-nums ${holdoutPass ? pnlColor(c.confirm.netPnl) : "text-muted-foreground"}`}
+                          title="Final confirmation window — revealed only for holdout passers"
+                        >
+                          {holdoutPass ? `${fmtUsd(c.confirm.netPnl)} (${c.confirm.trades}t)` : "🔒"}
                         </td>
                       </tr>
                     )
@@ -255,10 +295,10 @@ export function Optimize() {
               </table>
             </div>
             <p className="text-xs text-muted-foreground">
-              <b>Robust RAR</b> = worst fold's PnL ÷ drawdown — a config must earn it in every
-              sub-period. <b>Holdout</b> = engine PnL on the most-recent unseen slice: positive
-              robust with a negative holdout means it memorized the past — reject it. Every number
-              here comes from the real backtest engine.
+              <b>Robust RAR</b> = worst fold's PnL ÷ its drawdown — must be earned in every training
+              sub-period. <b>Holdout</b> = unseen selection window. <b>Confirm</b> = the final exam,
+              revealed (🔒) only when robust + holdout are green, so it stays unbiased. Only rows
+              with a ✓ are deployment candidates. All numbers from the real engine.
             </p>
 
             {selected != null && top[selected] && (
