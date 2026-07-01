@@ -6,6 +6,7 @@ import { Controllers } from "@/pages/Controllers"
 import { Home } from "@/pages/Home"
 import { Inspector } from "@/pages/Inspector"
 import { Instances } from "@/pages/Instances"
+import { Optimize } from "@/pages/Optimize"
 
 export function App() {
   return (
@@ -13,6 +14,7 @@ export function App() {
       <Route element={<Layout />}>
         <Route index element={<Home />} />
         <Route path="controllers" element={<Controllers />} />
+        <Route path="optimize" element={<Optimize />} />
         <Route path="instances" element={<Instances />} />
         <Route path="inspector" element={<Inspector />} />
         <Route path="inspector/:botName" element={<Inspector />} />
