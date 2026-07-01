@@ -255,8 +255,21 @@ class BacktestingDataProvider(MarketDataProvider):
                 f"{config.interval} after {attempts} attempts — backtest will be empty."
             )
         else:
-            # Persist so this window is fetched from Hyperliquid exactly once.
-            _write_candle_cache(cache_path, candles_df)
+            # Persist so this window is fetched from Hyperliquid exactly once —
+            # but ONLY if the snapshot plausibly covers the window. HL sometimes
+            # returns a truncated (non-empty) page mid-throttle; caching that
+            # would serve a partial window forever. Threshold is 50% so markets
+            # with genuine gaps (HIP-3 silver/sp500) can still cache.
+            expected_bars = max(1, (fetch_end - fetch_start) // interval_secs)
+            coverage = len(candles_df) / expected_bars
+            if coverage >= 0.5:
+                _write_candle_cache(cache_path, candles_df)
+            else:
+                logger.warning(
+                    f"Not caching partial candle snapshot for {config.trading_pair} "
+                    f"{config.interval}: {len(candles_df)}/{expected_bars} bars "
+                    f"({coverage:.0%}) — next run will refetch."
+                )
         # --- END PATCH ---
         # TODO: fix pandas-ta improper float index slicing to allow us to use float indexes
         # candles_df = self.ensure_epoch_index(candles_df)
