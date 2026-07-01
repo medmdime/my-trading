@@ -1,12 +1,13 @@
-// Client-side config optimizer. Runs the local breakout sim over walk-forward
-// folds, scores each candidate by risk-adjusted return (PnL / max-drawdown), and
-// keeps only configs that hold up across ALL folds (robust = worst fold), so a
-// lucky single-period spike can't win. A least-squares quadratic response surface
-// and a top-percentile centroid are added as regularized cross-checks — the
-// surface smooths away overfit spikes, the centroid finds the good-region center.
+// Engine-driven config optimizer. EVERY candidate is evaluated by the real
+// Hummingbot backtest engine (/backtesting/run) — no local approximation, so
+// what the optimizer reports is exactly what the engine (and, offset aside,
+// the live bot) would do. One engine run per candidate covers everything: the
+// returned trades are partitioned by entry time into walk-forward folds
+// (robust = worst fold) plus a most-recent holdout slice the search never
+// optimizes against. Sanity constraints keep risk/reward coherent — no
+// TP-smaller-than-SL configs, no trailing stop that can never arm.
 
-import type { HistCandle } from "./api"
-import { simulateBreakout, type Trade } from "./trades"
+import type { Trade } from "./trades"
 
 export interface ParamRange {
   key: string
@@ -47,6 +48,29 @@ export function applyParams(base: Cfg, ranges: ParamRange[], vals: number[]): Cf
   return c
 }
 
+// --- sanity constraints -----------------------------------------------------
+// Keep risk/reward coherent so the search can't emit configs that are formally
+// "optimal" but make no trading sense.
+const idxOf = (ranges: ParamRange[], key: string) => ranges.findIndex((r) => r.key === key)
+
+export function repairVals(ranges: ParamRange[], vals: number[]): number[] {
+  const v = [...vals]
+  const iSl = idxOf(ranges, "stop_loss")
+  const iTp = idxOf(ranges, "take_profit")
+  const iAct = idxOf(ranges, "activation_price")
+  const iTd = idxOf(ranges, "trailing_delta")
+  const clamp = (i: number, x: number) => Math.min(ranges[i].max, Math.max(ranges[i].min, x))
+  // Reward at least the risk: TP >= SL (no risk-2%-to-make-1% configs).
+  if (iSl >= 0 && iTp >= 0 && v[iTp] < v[iSl]) v[iTp] = clamp(iTp, v[iSl] * (1 + Math.random()))
+  // The trail must be able to arm before TP would close the trade.
+  if (iAct >= 0 && iTp >= 0 && v[iAct] > v[iTp] * 0.9) v[iAct] = clamp(iAct, v[iTp] * 0.6)
+  // The trail can't give back more than it took to arm.
+  if (iTd >= 0 && iAct >= 0 && v[iTd] > v[iAct]) v[iTd] = clamp(iTd, v[iAct] * 0.7)
+  return v
+}
+
+// --- scoring -----------------------------------------------------------------
+
 export interface FoldScore {
   netPnl: number
   maxDD: number
@@ -81,9 +105,9 @@ export interface Candidate {
   totalPnl: number
   totalTrades: number
   overfitGap: number // spread of rar across folds; large = fragile
-  origin: "search" | "surface" | "centroid" | "refine"
-  /** Score on the held-out most-recent window the search never saw (top finalists only). */
-  holdout?: FoldScore
+  origin: "search" | "refine" | "surface" | "centroid"
+  /** Score on the held-out most-recent window the search never optimizes against. */
+  holdout: FoldScore
 }
 
 export interface OptimizeOpts {
@@ -91,40 +115,15 @@ export interface OptimizeOpts {
   folds: number
   minTradesPerFold: number
   sizeQuote: number
-  /** Fraction of the most-recent candles reserved as an unseen final exam (default 0.25). */
+  /** Fraction of the most-recent window reserved as the unseen final exam (default 0.25). */
   holdoutFrac?: number
+  /** Parallel engine calls (default 4). */
+  concurrency?: number
 }
 
-function makeFolds(candles: HistCandle[], k: number): HistCandle[][] {
-  const sorted = [...candles].sort((a, b) => a.timestamp - b.timestamp)
-  const n = sorted.length
-  const out: HistCandle[][] = []
-  for (let i = 0; i < k; i++) out.push(sorted.slice(Math.floor((i * n) / k), Math.floor(((i + 1) * n) / k)))
-  return out
-}
-
-function evalCandidate(
-  base: Cfg,
-  ranges: ParamRange[],
-  vals: number[],
-  folds: HistCandle[][],
-  opts: OptimizeOpts,
-  origin: Candidate["origin"],
-): Candidate {
-  const config = applyParams(base, ranges, vals)
-  const fs = folds.map((f) => scoreTrades(simulateBreakout(f, config), opts.sizeQuote, opts.minTradesPerFold))
-  const rars = fs.map((f) => f.rar)
-  return {
-    config,
-    vals,
-    folds: fs,
-    robust: Math.min(...rars),
-    totalPnl: fs.reduce((s, f) => s + f.netPnl, 0),
-    totalTrades: fs.reduce((s, f) => s + f.trades, 0),
-    overfitGap: Math.max(...rars) - Math.min(...rars),
-    origin,
-  }
-}
+/** Runs one config through the real backtest engine over the full window and
+ * returns its trades — or null if the engine failed even after retries. */
+export type EngineRun = (config: Cfg) => Promise<Trade[] | null>
 
 // --- least squares: solve (XᵀX + ridge) b = Xᵀy via Gauss-Jordan -----------
 function solveLinear(A: number[][], b: number[]): number[] {
@@ -147,9 +146,8 @@ function solveLinear(A: number[][], b: number[]): number[] {
 }
 
 /** Fit score ≈ intercept + Σ(aᵢ·xᵢ + bᵢ·xᵢ²) on normalized params, then take the
- * per-param vertex of the fitted parabola (concave → interior max; else best
- * endpoint). This regularizes: it targets the center of a good region, not a
- * single noisy sample. */
+ * per-param vertex of the fitted parabola — the regularized center of the good
+ * region rather than a single lucky sample. */
 function surfaceOptimum(ranges: ParamRange[], X: number[][], y: number[]): number[] {
   const D = ranges.length
   const norm = (v: number[]) => v.map((x, i) => (x - ranges[i].min) / (ranges[i].max - ranges[i].min || 1))
@@ -194,68 +192,102 @@ function gauss(): number {
 }
 
 export async function runOptimize(
-  candles: HistCandle[],
   base: Cfg,
   ranges: ParamRange[],
+  window: { startTs: number; endTs: number },
   opts: OptimizeOpts,
-  onProgress?: (frac: number) => void,
+  runEngine: EngineRun,
+  onProgress?: (done: number, total: number) => void,
 ): Promise<Candidate[]> {
-  // Reserve the most-recent slice as a HOLDOUT the search never touches — the
-  // final exam that catches configs which only worked on the tuned period.
-  const sorted = [...candles].sort((a, b) => a.timestamp - b.timestamp)
   const holdoutFrac = opts.holdoutFrac ?? 0.25
-  const split = Math.floor(sorted.length * (1 - holdoutFrac))
-  const searchCandles = sorted.slice(0, split)
-  // Include warmup bars before the holdout so the channel exists from its start;
-  // trades opened before the boundary are filtered out.
-  const WARMUP = 50
-  const holdoutCandles = sorted.slice(Math.max(0, split - WARMUP))
-  const holdoutStartTs = sorted[split]?.timestamp ?? Infinity
+  const searchEnd = window.startTs + (window.endTs - window.startTs) * (1 - holdoutFrac)
+  const searchSpan = searchEnd - window.startTs
+  const foldEdges: Array<[number, number]> = []
+  for (let i = 0; i < opts.folds; i++) {
+    foldEdges.push([
+      window.startTs + (searchSpan * i) / opts.folds,
+      window.startTs + (searchSpan * (i + 1)) / opts.folds,
+    ])
+  }
 
-  const folds = makeFolds(searchCandles, opts.folds)
+  let done = 0
+  const total = opts.samples + 2
   const cands: Candidate[] = []
   const sampleVals: number[][] = []
   const scores: number[] = []
 
-  const push = (vals: number[], origin: Candidate["origin"]) => {
-    const cand = evalCandidate(base, ranges, vals, folds, opts, origin)
-    cands.push(cand)
-    sampleVals.push(vals)
-    scores.push(Number.isFinite(cand.robust) ? cand.robust : -999)
-    return cand
+  const evalVals = async (vals: number[], origin: Candidate["origin"]): Promise<void> => {
+    const v = repairVals(ranges, vals)
+    const config = applyParams(base, ranges, v)
+    const trades = await runEngine(config)
+    done++
+    onProgress?.(done, total)
+    if (!trades) return // engine failed after retries — skip rather than mis-score
+    const folds = foldEdges.map(([a, b]) =>
+      scoreTrades(trades.filter((t) => t.ts >= a && t.ts < b), opts.sizeQuote, opts.minTradesPerFold),
+    )
+    const holdout = scoreTrades(
+      trades.filter((t) => t.ts >= searchEnd),
+      opts.sizeQuote,
+      Math.max(1, Math.floor(opts.minTradesPerFold / 2)),
+    )
+    const rars = folds.map((f) => f.rar)
+    cands.push({
+      config,
+      vals: v,
+      folds,
+      robust: Math.min(...rars),
+      totalPnl: folds.reduce((s, f) => s + f.netPnl, 0),
+      totalTrades: folds.reduce((s, f) => s + f.trades, 0),
+      overfitGap: Math.max(...rars) - Math.min(...rars),
+      origin,
+      holdout,
+    })
+    sampleVals.push(v)
+    scores.push(Number.isFinite(rars.length ? Math.min(...rars) : NaN) ? Math.min(...rars) : -999)
   }
 
-  // Stage 1 — explore: uniform random over the full ranges.
+  const pool = async (jobs: Array<() => Promise<void>>) => {
+    const limit = Math.max(1, opts.concurrency ?? 4)
+    let next = 0
+    await Promise.all(
+      Array.from({ length: Math.min(limit, jobs.length) }, async () => {
+        while (next < jobs.length) {
+          const j = jobs[next++]
+          await j()
+        }
+      }),
+    )
+  }
+
+  // Stage 1 — explore: uniform random over the full (constraint-repaired) ranges.
   const explore = Math.ceil(opts.samples * 0.6)
-  for (let s = 0; s < explore; s++) {
-    push(ranges.map((r) => r.min + Math.random() * (r.max - r.min)), "search")
-    if (s % 25 === 0) {
-      onProgress?.(s / opts.samples)
-      await new Promise((r) => setTimeout(r, 0)) // yield so the UI stays live
-    }
-  }
+  await pool(
+    Array.from({ length: explore }, () => () =>
+      evalVals(ranges.map((r) => r.min + Math.random() * (r.max - r.min)), "search"),
+    ),
+  )
 
-  // Stage 2 — refine: Gaussian jitter around the best seeds so the search
-  // zooms into the promising region instead of wasting samples everywhere.
+  // Stage 2 — refine: Gaussian jitter around the best seeds so engine calls
+  // concentrate in the promising region.
   const seeds = [...cands].sort((a, b) => b.robust - a.robust).slice(0, 8)
   const refine = opts.samples - explore
-  for (let s = 0; s < refine && seeds.length; s++) {
-    const seed = seeds[s % seeds.length]
-    const vals = ranges.map((r, i) => {
-      const sigma = (r.max - r.min) * 0.12
-      return Math.min(r.max, Math.max(r.min, seed.vals[i] + gauss() * sigma))
-    })
-    push(vals, "refine")
-    if (s % 25 === 0) {
-      onProgress?.((explore + s) / opts.samples)
-      await new Promise((r) => setTimeout(r, 0))
-    }
+  if (seeds.length) {
+    await pool(
+      Array.from({ length: refine }, (_, s) => () => {
+        const seed = seeds[s % seeds.length]
+        const vals = ranges.map((r, i) => {
+          const sigma = (r.max - r.min) * 0.12
+          return Math.min(r.max, Math.max(r.min, seed.vals[i] + gauss() * sigma))
+        })
+        return evalVals(vals, "refine")
+      }),
+    )
   }
 
   // Least-squares response-surface optimum (the regularized pick).
   try {
-    const surf = surfaceOptimum(ranges, sampleVals, scores)
-    push(surf, "surface")
+    await evalVals(surfaceOptimum(ranges, sampleVals, scores), "surface")
   } catch {
     /* singular fit — skip */
   }
@@ -266,17 +298,8 @@ export async function runOptimize(
     .sort((a, b) => b.robust - a.robust)
     .slice(0, Math.max(3, Math.ceil(opts.samples * 0.05)))
   if (top.length) {
-    const cVals = ranges.map((_, i) => top.reduce((s, c) => s + c.vals[i], 0) / top.length)
-    push(cVals, "centroid")
+    await evalVals(ranges.map((_, i) => top.reduce((s, c) => s + c.vals[i], 0) / top.length), "centroid")
   }
 
-  // Final exam: score the top finalists on the unseen holdout window.
-  const ranked = cands.sort((a, b) => b.robust - a.robust)
-  for (const c of ranked.slice(0, 25)) {
-    const trades = simulateBreakout(holdoutCandles, c.config).filter((t) => t.ts >= holdoutStartTs)
-    c.holdout = scoreTrades(trades, opts.sizeQuote, Math.max(1, Math.floor(opts.minTradesPerFold / 2)))
-  }
-
-  onProgress?.(1)
-  return ranked
+  return cands.sort((a, b) => b.robust - a.robust)
 }
