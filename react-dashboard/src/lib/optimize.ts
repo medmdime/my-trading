@@ -346,9 +346,14 @@ export function widenRanges(original: ParamRange[], factor: number): ParamRange[
     if (r.int) {
       min = Math.max(2, Math.round(min))
       max = Math.round(max)
-    } else {
+    } else if (r.pct) {
+      // Percent params (SL/TP/trailing): stay positive, never absurd (>60%).
       min = Math.max(r.min * 0.25, min, 1e-4)
       max = Math.min(max, 0.6)
+    } else {
+      // rel_volume_mult: a volume gate below 1x average is no gate at all —
+      // widening must never disable the filter.
+      min = Math.max(1.0, min)
     }
     return { ...r, min, max }
   })
