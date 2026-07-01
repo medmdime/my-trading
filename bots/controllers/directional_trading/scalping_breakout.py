@@ -13,12 +13,12 @@ Signal:
   * else FLAT (0).
 
 Which candle the signal is read from is controlled by `signal_candle_offset`:
-  * 0 (default) = the LIVE, still-forming candle -> enters intra-bar the instant
-    price crosses (maximum responsiveness, but repaints vs a closed-bar backtest;
-    a bar can poke past the level and close back inside -> live-only fake-outs).
-  * 1 = the last FULLY CLOSED candle -> enters at the next tick after a confirmed
-    breakout close. This is what a closed-bar backtest simulates, so live lines
-    up with the backtest. No repaint, fewer/later trades.
+  * 0 = the LIVE, still-forming candle -> enters intra-bar the instant price
+    crosses (maximum responsiveness, but repaints vs a closed-bar backtest; a bar
+    can poke past the level and close back inside -> live-only fake-outs).
+  * 1 (DEFAULT) = the last FULLY CLOSED candle -> enters at the next tick after a
+    confirmed breakout close. This is what a closed-bar backtest simulates, so
+    live lines up with the backtest. No repaint, no fake-out entries.
   * N = N bars back (further delay; rarely needed).
 """
 import math
@@ -81,9 +81,9 @@ class ScalpingBreakoutConfig(DirectionalTradingControllerConfigBase):
         },
     )
     signal_candle_offset: int = Field(
-        default=0,
+        default=1,
         json_schema_extra={
-            "prompt": "Signal candle offset (0 = live/forming candle, 1 = last CLOSED candle): ",
+            "prompt": "Signal candle offset (1 = last CLOSED candle [default, backtest-aligned], 0 = live/forming candle): ",
             "prompt_on_new": True,
             "is_updatable": True,
         },
@@ -92,7 +92,9 @@ class ScalpingBreakoutConfig(DirectionalTradingControllerConfigBase):
     @field_validator("signal_candle_offset", mode="before")
     @classmethod
     def _validate_offset(cls, v):
-        v = 0 if v is None else int(v)
+        # None (unset in older configs) -> 1: default to the CLOSED candle so live
+        # matches the backtest. 0 must be set explicitly to opt into forming-candle.
+        v = 1 if v is None else int(v)
         if v < 0:
             raise ValueError("signal_candle_offset must be >= 0")
         return v

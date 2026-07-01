@@ -30,8 +30,8 @@ combination of {off, trend-only, rsi-only, both} is possible. With both filters
 off this controller is byte-for-byte equivalent to scalping_breakout.
 
 `signal_candle_offset` works exactly as in scalping_breakout:
-  * 0 (default) = the LIVE, still-forming candle (repaints vs a closed-bar backtest);
-  * 1 = the last FULLY CLOSED candle (lines up with the backtest, no repaint);
+  * 0 = the LIVE, still-forming candle (repaints vs a closed-bar backtest);
+  * 1 (DEFAULT) = the last FULLY CLOSED candle (lines up with the backtest, no repaint);
   * N = N bars back.
 """
 import math
@@ -95,9 +95,9 @@ class ScalpingBreakoutFilteredConfig(DirectionalTradingControllerConfigBase):
         },
     )
     signal_candle_offset: int = Field(
-        default=0,
+        default=1,
         json_schema_extra={
-            "prompt": "Signal candle offset (0 = live/forming candle, 1 = last CLOSED candle): ",
+            "prompt": "Signal candle offset (1 = last CLOSED candle [default, backtest-aligned], 0 = live/forming candle): ",
             "prompt_on_new": True,
             "is_updatable": True,
         },
@@ -143,10 +143,17 @@ class ScalpingBreakoutFilteredConfig(DirectionalTradingControllerConfigBase):
         json_schema_extra={"prompt": "Block SHORTs when RSI <= this (oversold): ", "is_updatable": True},
     )
 
-    @field_validator("signal_candle_offset", "trend_ma_length", "rsi_length", mode="before")
+    @field_validator("trend_ma_length", "rsi_length", mode="before")
     @classmethod
     def _coerce_int(cls, v):
         return 0 if v is None else int(v)
+
+    @field_validator("signal_candle_offset", mode="before")
+    @classmethod
+    def _coerce_offset(cls, v):
+        # None (unset in older configs) -> 1: default to the CLOSED candle so live
+        # matches the backtest. 0 must be set explicitly to opt into forming-candle.
+        return 1 if v is None else int(v)
 
     @field_validator("signal_candle_offset")
     @classmethod
