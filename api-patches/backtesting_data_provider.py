@@ -104,7 +104,11 @@ def _read_candle_cache(path: str):
 def _write_candle_cache(path: str, df) -> None:
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        df.to_pickle(path)
+        # Atomic write: parallel backtests may race on the same window; a partial
+        # pickle must never be visible to a concurrent reader.
+        tmp = f"{path}.tmp.{os.getpid()}"
+        df.to_pickle(tmp)
+        os.replace(tmp, path)
         logger.info(f"Candle cache WRITE: {path} ({len(df)} rows)")
     except Exception as e:  # pragma: no cover - defensive
         logger.warning(f"Candle cache write failed ({path}): {e}")
@@ -199,13 +203,29 @@ class BacktestingDataProvider(MarketDataProvider):
                 return existing_feed
         # Create a new feed or restart the existing one with updated max_records
         candle_feed = CandlesFactory.get_candle(config)
-        candles_buffer = config.max_records * CandlesBase.interval_to_seconds[config.interval]
+        # --- PATCH (my-trading): persistent candle cache (wire-up) ---
+        # Normalize the fetch window so EVERY config over the same backtest window
+        # shares one cache entry: the warmup buffer depends on max_records (which
+        # varies per optimizer candidate via the lookbacks), so we fetch a fixed
+        # generous buffer and round the bounds — otherwise each candidate would
+        # get its own cache key and still hammer Hyperliquid.
+        interval_secs = CandlesBase.interval_to_seconds[config.interval]
+        buffer_secs = max(config.max_records, 500) * interval_secs
+        fetch_start = int((self.start_time - buffer_secs) // 86400 * 86400)
+        fetch_end = int(-(-self.end_time // interval_secs) * interval_secs)
+        cache_path = _candle_cache_path(
+            config.connector, config.trading_pair, config.interval, fetch_start, fetch_end
+        )
+        cached_df = _read_candle_cache(cache_path)
+        if cached_df is not None:
+            self.candles_feeds[key] = cached_df
+            return cached_df
         hist_config = HistoricalCandlesConfig(
             connector_name=config.connector,
             trading_pair=config.trading_pair,
             interval=config.interval,
-            start_time=self.start_time - candles_buffer,
-            end_time=self.end_time,
+            start_time=fetch_start,
+            end_time=fetch_end,
         )
         # --- PATCH (my-trading) ---
         # Hyperliquid's public candle endpoint intermittently returns an EMPTY
@@ -234,6 +254,9 @@ class BacktestingDataProvider(MarketDataProvider):
                 f"Still no candles for {config.connector} {config.trading_pair} "
                 f"{config.interval} after {attempts} attempts — backtest will be empty."
             )
+        else:
+            # Persist so this window is fetched from Hyperliquid exactly once.
+            _write_candle_cache(cache_path, candles_df)
         # --- END PATCH ---
         # TODO: fix pandas-ta improper float index slicing to allow us to use float indexes
         # candles_df = self.ensure_epoch_index(candles_df)

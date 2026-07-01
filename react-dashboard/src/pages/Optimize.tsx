@@ -93,7 +93,9 @@ export function Optimize() {
           folds,
           minTradesPerFold: minTrades,
           sizeQuote: Number(cfg.total_amount_quote ?? 30),
-          concurrency: 2,
+          // With the server-side candle cache the engine only hits Hyperliquid
+          // once per window — the warmup call pays it, the rest run parallel.
+          concurrency: 4,
         },
         (c) => engineTrades(c, start, now),
         (done, total) => setProgress({ done, total }),
@@ -157,10 +159,8 @@ export function Optimize() {
             </Button>
             {cfg && !running && (
               <span className="ml-3 text-xs text-muted-foreground">
-                {samples} real engine runs (2 in parallel, roughly{" "}
-                {Math.max(2, Math.round((samples * 4) / 2 / 60))}–
-                {Math.max(4, Math.round((samples * 10) / 2 / 60))} min) on {cfg.trading_pair}{" "}
-                {cfg.interval}, last {days}d · offset forced to 1
+                {samples} real engine runs, 4 in parallel (fast once the server's candle cache is
+                warm) on {cfg.trading_pair} {cfg.interval}, last {days}d · offset forced to 1
               </span>
             )}
           </div>
