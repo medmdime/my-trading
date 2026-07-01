@@ -126,6 +126,33 @@ export const getControllerPerformanceLatest = () =>
 export const stopAndArchiveBot = (botName: string) =>
   apiPost(`/bot-orchestration/stop-and-archive-bot/${encodeURIComponent(botName)}`)
 
+export interface DeployRequest {
+  instance_name: string
+  credentials_profile: string
+  controllers_config: string[]
+  image?: string
+  max_global_drawdown_quote?: number | null
+  max_controller_drawdown_quote?: number | null
+}
+
+export interface DeployResult {
+  success?: boolean
+  message?: string
+  unique_instance_name?: string
+  controllers_deployed?: string[]
+  script_config_generated?: string
+  detail?: unknown
+}
+
+/** Create + start a bot from one or more saved controller configs (by name). */
+export const deployV2Controllers = (req: DeployRequest) =>
+  apiPost<DeployResult>("/bot-orchestration/deploy-v2-controllers", {
+    image: "hummingbot/hummingbot:latest",
+    max_global_drawdown_quote: null,
+    max_controller_drawdown_quote: null,
+    ...req,
+  })
+
 export const stopBot = (botName: string, skipOrderCancellation = false) =>
   apiPost("/bot-orchestration/stop-bot", {
     bot_name: botName,

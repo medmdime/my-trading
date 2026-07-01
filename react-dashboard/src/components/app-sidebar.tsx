@@ -1,6 +1,6 @@
 import * as React from "react"
 import { Link, useLocation } from "react-router-dom"
-import { Boxes, Home, LineChart, Radio, SlidersHorizontal, Wand2 } from "lucide-react"
+import { Boxes, Home, LineChart, Radio, Rocket, SlidersHorizontal, Wand2 } from "lucide-react"
 
 import { IS_LIVE, TARGET_LABEL } from "@/lib/env"
 import {
@@ -16,13 +16,27 @@ import {
   SidebarRail,
 } from "@/components/ui/sidebar"
 
-const NAV = [
-  { to: "/", label: "Overview", icon: Home, end: true },
-  { to: "/controllers", label: "Controllers", icon: SlidersHorizontal, end: false },
-  { to: "/optimize", label: "Optimizer", icon: Wand2, end: false },
-  { to: "/instances", label: "Instances", icon: Boxes, end: false },
-  { to: "/inspector", label: "Decision Inspector", icon: Radio, end: false },
-  { to: "/analysis", label: "Trade Analysis", icon: LineChart, end: false },
+const GROUPS = [
+  {
+    label: "Config & Deploy",
+    items: [
+      { to: "/controllers", label: "Controllers", icon: SlidersHorizontal, end: false },
+      { to: "/optimize", label: "Optimizer", icon: Wand2, end: false },
+      { to: "/deploy", label: "Deploy", icon: Rocket, end: false },
+    ],
+  },
+  {
+    label: "Live",
+    items: [
+      { to: "/", label: "Overview", icon: Home, end: true },
+      { to: "/instances", label: "Instances", icon: Boxes, end: false },
+      { to: "/inspector", label: "Decision Inspector", icon: Radio, end: false },
+    ],
+  },
+  {
+    label: "Backtest & Analysis",
+    items: [{ to: "/analysis", label: "Trade Analysis", icon: LineChart, end: false }],
+  },
 ]
 
 export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
@@ -44,25 +58,27 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         </div>
       </SidebarHeader>
       <SidebarContent>
-        <SidebarGroup>
-          <SidebarGroupLabel>Monitor</SidebarGroupLabel>
-          <SidebarMenu>
-            {NAV.map((item) => (
-              <SidebarMenuItem key={item.to}>
-                <SidebarMenuButton
-                  asChild
-                  isActive={isActive(item.to, item.end)}
-                  tooltip={item.label}
-                >
-                  <Link to={item.to}>
-                    <item.icon />
-                    <span>{item.label}</span>
-                  </Link>
-                </SidebarMenuButton>
-              </SidebarMenuItem>
-            ))}
-          </SidebarMenu>
-        </SidebarGroup>
+        {GROUPS.map((group) => (
+          <SidebarGroup key={group.label}>
+            <SidebarGroupLabel>{group.label}</SidebarGroupLabel>
+            <SidebarMenu>
+              {group.items.map((item) => (
+                <SidebarMenuItem key={item.to}>
+                  <SidebarMenuButton
+                    asChild
+                    isActive={isActive(item.to, item.end)}
+                    tooltip={item.label}
+                  >
+                    <Link to={item.to}>
+                      <item.icon />
+                      <span>{item.label}</span>
+                    </Link>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              ))}
+            </SidebarMenu>
+          </SidebarGroup>
+        ))}
       </SidebarContent>
       <SidebarFooter>
         <div className="flex items-center gap-2 px-2 py-1.5 text-xs group-data-[collapsible=icon]:justify-center">
