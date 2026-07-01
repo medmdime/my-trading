@@ -1,4 +1,5 @@
 import * as React from "react"
+import { Loader2 } from "lucide-react"
 
 import { IS_LIVE } from "@/lib/env"
 import { Button } from "@/components/ui/button"
@@ -23,6 +24,8 @@ interface ConfirmButtonProps {
   variant?: React.ComponentProps<typeof Button>["variant"]
   size?: React.ComponentProps<typeof Button>["size"]
   disabled?: boolean
+  /** Shows a spinner in place of the label and disables the trigger. */
+  loading?: boolean
   onConfirm: () => void
   /** Force the dialog even when not pointed at live prod. */
   alwaysConfirm?: boolean
@@ -41,16 +44,30 @@ export function ConfirmButton({
   variant = "outline",
   size = "sm",
   disabled,
+  loading,
   onConfirm,
   alwaysConfirm,
 }: ConfirmButtonProps) {
   const [open, setOpen] = React.useState(false)
   const needsConfirm = IS_LIVE || alwaysConfirm
+  const content = loading ? (
+    <>
+      <Loader2 className="size-3.5 animate-spin" />
+      {label}
+    </>
+  ) : (
+    label
+  )
 
   if (!needsConfirm) {
     return (
-      <Button variant={variant} size={size} disabled={disabled} onClick={onConfirm}>
-        {label}
+      <Button
+        variant={variant}
+        size={size}
+        disabled={disabled || loading}
+        onClick={onConfirm}
+      >
+        {content}
       </Button>
     )
   }
@@ -58,8 +75,8 @@ export function ConfirmButton({
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <Button variant={variant} size={size} disabled={disabled}>
-          {label}
+        <Button variant={variant} size={size} disabled={disabled || loading}>
+          {content}
         </Button>
       </DialogTrigger>
       <DialogContent className="sm:max-w-lg">

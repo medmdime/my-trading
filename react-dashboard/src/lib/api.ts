@@ -200,6 +200,10 @@ export interface ControllerConfig {
   signal_candle_offset?: number
   stop_loss?: number
   take_profit?: number
+  time_limit?: number
+  leverage?: number
+  total_amount_quote?: number
+  cooldown_time?: number
   trailing_stop?: { activation_price: number; trailing_delta: number }
   [k: string]: unknown
 }
@@ -211,6 +215,28 @@ export const getBotControllerConfigs = (botName: string) =>
 
 export const getAllControllerConfigs = () =>
   apiGet<ControllerConfig[]>("/controllers/configs/")
+
+/** Create or update a controller config (body is the full config object). */
+export const saveControllerConfig = (id: string, config: Record<string, unknown>) =>
+  apiPost(`/controllers/configs/${encodeURIComponent(id)}`, config)
+
+export const deleteControllerConfig = (id: string) =>
+  apiDelete(`/controllers/configs/${encodeURIComponent(id)}`)
+
+/** Validate a config against a controller's pydantic model before saving. */
+export const validateControllerConfig = (
+  controllerType: string,
+  controllerName: string,
+  config: Record<string, unknown>,
+) =>
+  apiPost<{ valid?: boolean; errors?: unknown; detail?: unknown }>(
+    `/controllers/${encodeURIComponent(controllerType)}/${encodeURIComponent(controllerName)}/config/validate`,
+    config,
+  )
+
+/** Available controllers grouped by type, e.g. { directional_trading: [...] }. */
+export const getAvailableControllers = () =>
+  apiGet<Record<string, string[]>>("/controllers/")
 
 // ---------------------------------------------------------------------------
 // Backtesting
@@ -235,10 +261,54 @@ export const runBacktest = (req: BacktestRequest) =>
   apiPost<BacktestResponse>("/backtesting/run", req)
 
 // ---------------------------------------------------------------------------
+// Market data — historical candles (reliable; NOT throttled like backtest)
+// ---------------------------------------------------------------------------
+
+export interface HistCandle {
+  timestamp: number // seconds
+  open: number
+  high: number
+  low: number
+  close: number
+  volume: number
+}
+
+/**
+ * Raw OHLCV over an arbitrary window. Unlike /backtesting/run this returns
+ * candles reliably (server-side cached), so we use it to draw charts + rebuild
+ * the channel locally instead of paying the backtest candle-throttle tax.
+ */
+export const getHistoricalCandles = (
+  connector: string,
+  tradingPair: string,
+  interval: string,
+  startTime: number,
+  endTime: number,
+) =>
+  apiPost<HistCandle[]>("/market-data/historical-candles", {
+    connector_name: connector,
+    trading_pair: tradingPair,
+    interval,
+    start_time: startTime,
+    end_time: endTime,
+  })
+
+// ---------------------------------------------------------------------------
 // Archived bots
 // ---------------------------------------------------------------------------
 
 export const getArchivedBots = () => apiGet<string[]>("/archived-bots/")
+
+/**
+ * The on-disk sqlite path for a *running* bot. The archived-bots reader accepts
+ * any db path (FastAPI :path param), so we can read a live bot's fills the same
+ * way — executors aren't written until archive, but the raw fills table is.
+ */
+export const liveDbPath = (botName: string) =>
+  `bots/instances/${botName}/data/${botName}.sqlite`
+
+/** True for a running-bot instance path vs an archived one. */
+export const isLiveDbPath = (dbPath: string) => dbPath.startsWith("bots/instances/")
 
 export const getArchivedTrades = (dbPath: string) =>
   apiGet<{ db_path: string; trades: Record<string, unknown>[] }>(

@@ -27,7 +27,7 @@ const botNameFromPath = (p: string) =>
   p.split("/").slice(-1)[0]?.replace(/\.sqlite$/, "") ?? p
 
 export function Instances() {
-  const { act, isPending } = useBotActions()
+  const { act, isActing, isRefreshing } = useBotActions()
   const active = useQuery({
     queryKey: ["activeContainers"],
     queryFn: getActiveContainers,
@@ -69,6 +69,7 @@ export function Instances() {
         <p className="text-sm text-muted-foreground">
           Bots grouped by <b>strategy</b> status (not container state). Stop &amp; Archive uses the
           correct <code className="text-xs">stop-and-archive-bot</code> endpoint (no 404).
+          {isRefreshing && <span className="ml-2 text-primary">· updating…</span>}
         </p>
       </div>
 
@@ -113,7 +114,7 @@ export function Instances() {
                       name={c.name}
                       description="Gracefully stops the strategy (cancels open orders). The container stays so you can restart or archive it."
                       confirmLabel="Stop bot"
-                      disabled={isPending}
+                      loading={isActing(`Stop ${c.name}`)}
                       onConfirm={() => act(`Stop ${c.name}`, () => stopBot(c.name))}
                     />
                     <ConfirmButton
@@ -122,7 +123,7 @@ export function Instances() {
                       name={c.name}
                       description="Stops the bot and moves its database to archived storage. Its trade history stays in Trade Analysis."
                       confirmLabel="Stop & archive"
-                      disabled={isPending}
+                      loading={isActing(`Archive ${c.name}`)}
                       onConfirm={() => act(`Archive ${c.name}`, () => stopAndArchiveBot(c.name))}
                     />
                   </>
@@ -172,7 +173,7 @@ export function Instances() {
                       name={c.name}
                       description="Archives this bot's database so its trades stay in Trade Analysis, then you can remove it."
                       confirmLabel="Archive"
-                      disabled={isPending}
+                      loading={isActing(`Archive ${c.name}`)}
                       onConfirm={() => act(`Archive ${c.name}`, () => stopAndArchiveBot(c.name))}
                     />
                     <ConfirmButton
@@ -181,7 +182,7 @@ export function Instances() {
                       name={c.name}
                       description="Deletes the container. Archive first if you want to keep its trade history."
                       confirmLabel="Remove"
-                      disabled={isPending}
+                      loading={isActing(`Remove ${c.name}`)}
                       onConfirm={() => act(`Remove ${c.name}`, () => removeContainer(c.name))}
                     />
                   </>
@@ -203,7 +204,7 @@ export function Instances() {
             <ArchivedRow
               key={path}
               path={path}
-              disabled={isPending}
+              loading={isActing(`Delete ${botNameFromPath(path)}`)}
               onDelete={() => act(`Delete ${botNameFromPath(path)}`, () => deleteArchivedBot(path))}
             />
           ))}
@@ -216,11 +217,11 @@ export function Instances() {
 function ArchivedRow({
   path,
   onDelete,
-  disabled,
+  loading,
 }: {
   path: string
   onDelete: () => void
-  disabled: boolean
+  loading: boolean
 }) {
   const name = botNameFromPath(path)
   const execs = useQuery({
@@ -259,7 +260,7 @@ function ArchivedRow({
             description="Permanently removes this archived bot's database and records. This cannot be undone."
             confirmLabel="Delete"
             alwaysConfirm
-            disabled={disabled}
+            loading={loading}
             onConfirm={onDelete}
           />
         </>

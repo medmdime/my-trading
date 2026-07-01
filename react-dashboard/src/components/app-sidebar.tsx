@@ -1,6 +1,6 @@
 import * as React from "react"
 import { Link, useLocation } from "react-router-dom"
-import { Boxes, Home, LineChart, Radio } from "lucide-react"
+import { Boxes, Home, LineChart, Radio, SlidersHorizontal } from "lucide-react"
 
 import { IS_LIVE, TARGET_LABEL } from "@/lib/env"
 import {
@@ -18,6 +18,7 @@ import {
 
 const NAV = [
   { to: "/", label: "Overview", icon: Home, end: true },
+  { to: "/controllers", label: "Controllers", icon: SlidersHorizontal, end: false },
   { to: "/instances", label: "Instances", icon: Boxes, end: false },
   { to: "/inspector", label: "Decision Inspector", icon: Radio, end: false },
   { to: "/analysis", label: "Trade Analysis", icon: LineChart, end: false },
