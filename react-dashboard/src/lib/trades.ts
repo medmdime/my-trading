@@ -1,5 +1,5 @@
 // Normalize archived/backtest executors into a uniform round-trip shape,
-// mirroring dashboard-patches/components/trade_viz.py.
+// ported from the old Streamlit dashboard's trade_viz.py logic.
 
 export const CLOSE_TYPES: Record<number, string> = {
   1: "TIME_LIMIT",

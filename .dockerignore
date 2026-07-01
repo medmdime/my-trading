@@ -1,8 +1,12 @@
 # Keep secrets and runtime state OUT of the Docker build context / images.
-# (Credentials are added per-environment via the dashboard, never baked.)
+# (Real exchange API keys are added per-environment via the UI, never baked —
+# but the non-secret master_account template files ARE baked, mirroring
+# .gitignore, so api-seed-entrypoint.sh can seed them into a fresh bind mount.)
 **/__pycache__
 *.pyc
-bots/credentials
+bots/credentials/*/connectors/*
+!bots/credentials/*/connectors/.gitignore
+!bots/credentials/*/connectors/.dockerignore
 bots/data
 bots/logs
 bots/instances

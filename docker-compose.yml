@@ -1,10 +1,10 @@
 # Thin orchestration for MY trading stack.
-# Everything here runs from PUBLISHED IMAGES — I do not maintain this source.
-# Update the engine/UI with:  docker compose pull && docker compose up -d
+# The engine (hummingbot-api) runs from a PUBLISHED IMAGE + my code baked in
+# via api.Dockerfile. The UI (react-dashboard) is my own app, built from source.
 # The ONLY code I maintain lives in:
 #   - ./bots/controllers/...   (my strategies)
 #   - ./bots/conf/controllers/ (my configs)
-#   - ./dashboard-patches/     (my strategy's config page + backtest fix)
+#   - ./react-dashboard/       (my UI, replaces the stock Streamlit dashboard)
 services:
   hummingbot-api:
     container_name: hummingbot-api
@@ -45,29 +45,6 @@ services:
       - emqx-bridge
     depends_on:
       - postgres
-
-  dashboard:
-    container_name: dashboard
-    # stock web UI + MY overlays, baked in via dashboard.Dockerfile.
-    # (Bind-mounting the overlay files breaks on Coolify — see dashboard.Dockerfile.)
-    build:
-      context: .
-      dockerfile: dashboard.Dockerfile
-    ports:
-      - "8501:8501"
-    environment:
-      - AUTH_SYSTEM_ENABLED=False
-      # reach the API over the internal docker network (robust; no host-port coupling)
-      - BACKEND_API_HOST=hummingbot-api
-      - BACKEND_API_PORT=8000
-      - BACKEND_API_USERNAME=admin
-      - BACKEND_API_PASSWORD=admin
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    networks:
-      - emqx-bridge
-    depends_on:
-      - hummingbot-api
 
   react-dashboard:
     container_name: react-dashboard

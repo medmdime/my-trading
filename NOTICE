@@ -1,17 +1,15 @@
 my-trading
 ==========
 
-This repository contains only my own code (trading strategies, configs, and a small
-dashboard overlay). It orchestrates several third-party projects that I do NOT
-maintain or redistribute as source — they are pulled at runtime as Docker images,
-referenced by pinned digest in docker-compose.yml.
+This repository contains only my own code (trading strategies, configs, patches,
+and my own React web UI). It orchestrates several third-party projects that I do
+NOT maintain or redistribute as source — they are pulled at runtime as Docker
+images, referenced by pinned digest in docker-compose.yml.
 
 Upstream projects referenced
 ----------------------------
 - hummingbot-api — https://github.com/hummingbot/hummingbot-api
     Image: hummingbot/hummingbot-api  (Apache License 2.0)
-- dashboard     — https://github.com/hummingbot/dashboard
-    Image: hummingbot/dashboard       (Apache License 2.0)
 - hummingbot-mcp (optional) — https://github.com/hummingbot/hummingbot-mcp
     Image: hummingbot/mcp             (Apache License 2.0)
 - EMQX          — https://github.com/emqx/emqx        Image: emqx:5   (Apache License 2.0)
@@ -23,12 +21,8 @@ The following files of mine are derived from the Hummingbot projects (Apache-2.0
 and retain that license and copyright of the original authors:
 - bots/controllers/directional_trading/scalping_breakout.py
     (a Hummingbot DirectionalTradingControllerBase controller)
-- dashboard-patches/pages/config/scalping_breakout/*
-    (modeled on the upstream dashboard's config pages)
-- dashboard-patches/components/backtesting.py
-    (a modified copy of the upstream dashboard component)
-- dashboard-patches/pages/permissions.py
-    (navigation, from the upstream dashboard)
+- api-patches/backtesting_data_provider.py, api-patches/position_executor_simulator.py
+    (modified copies of hummingbot-api backtesting components)
 - init-db.sql  (from hummingbot-api)
 
 Copyright (c) 2024-2026 the Hummingbot Foundation and contributors, for the

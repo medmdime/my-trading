@@ -1,6 +1,6 @@
 import * as React from "react"
 import { Link, useLocation } from "react-router-dom"
-import { Boxes, Home, LineChart, Radio, Rocket, SlidersHorizontal, Wand2 } from "lucide-react"
+import { Boxes, Home, KeyRound, LineChart, Radio, Rocket, SlidersHorizontal, Wand2 } from "lucide-react"
 
 import { IS_LIVE, TARGET_LABEL } from "@/lib/env"
 import {
@@ -20,6 +20,7 @@ const GROUPS = [
   {
     label: "Config & Deploy",
     items: [
+      { to: "/accounts", label: "Accounts", icon: KeyRound, end: false },
       { to: "/controllers", label: "Controllers", icon: SlidersHorizontal, end: false },
       { to: "/optimize", label: "Optimizer", icon: Wand2, end: false },
       { to: "/deploy", label: "Deploy", icon: Rocket, end: false },

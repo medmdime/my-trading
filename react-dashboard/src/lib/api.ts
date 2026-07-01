@@ -187,6 +187,52 @@ export const startContainer = (name: string) =>
   apiPost(`/docker/start-container/${encodeURIComponent(name)}`)
 
 // ---------------------------------------------------------------------------
+// Accounts & credentials
+// ---------------------------------------------------------------------------
+
+export const getAccounts = () => apiGet<string[]>("/accounts/")
+
+export const getAccountCredentials = (accountName: string) =>
+  apiGet<string[]>(`/accounts/${encodeURIComponent(accountName)}/credentials`)
+
+/** Creates the account folder + copies master_account's template files into it. */
+export const addAccount = (accountName: string) =>
+  apiPost(`/accounts/add-account?account_name=${encodeURIComponent(accountName)}`)
+
+/** The API itself rejects deleting "master_account" (400). */
+export const deleteAccount = (accountName: string) =>
+  apiPost(`/accounts/delete-account?account_name=${encodeURIComponent(accountName)}`)
+
+export const addCredential = (
+  accountName: string,
+  connectorName: string,
+  credentials: Record<string, string>,
+) =>
+  apiPost(
+    `/accounts/add-credential/${encodeURIComponent(accountName)}/${encodeURIComponent(connectorName)}`,
+    credentials,
+  )
+
+export const deleteCredential = (accountName: string, connectorName: string) =>
+  apiPost(
+    `/accounts/delete-credential/${encodeURIComponent(accountName)}/${encodeURIComponent(connectorName)}`,
+  )
+
+export const getAvailableConnectors = () => apiGet<string[]>("/connectors/")
+
+export interface ConnectorConfigField {
+  type: string
+  required: boolean
+  allowed_values?: unknown[]
+}
+
+/** One entry per credential field the connector needs (e.g. api_key, api_secret). */
+export const getConnectorConfigMap = (connectorName: string) =>
+  apiGet<Record<string, ConnectorConfigField>>(
+    `/connectors/${encodeURIComponent(connectorName)}/config-map`,
+  )
+
+// ---------------------------------------------------------------------------
 // Portfolio
 // ---------------------------------------------------------------------------
 

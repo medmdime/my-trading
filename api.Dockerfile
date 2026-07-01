@@ -10,9 +10,14 @@
 FROM hummingbot/hummingbot-api:latest@sha256:4ebeed379a1f99cad8e2b1090108d44357900a4c88291488028936b56844784e
 
 # Baked copy (kept separate from the live, bind-mounted /hummingbot-api/bots):
-COPY bots/controllers /opt/seed-bots/controllers
-COPY bots/scripts     /opt/seed-bots/scripts
-COPY bots/conf        /opt/seed-bots/conf
+COPY bots/controllers  /opt/seed-bots/controllers
+COPY bots/scripts      /opt/seed-bots/scripts
+COPY bots/conf         /opt/seed-bots/conf
+# credentials/: only the non-secret master_account template files + empty
+# connectors/ dir markers make it past .dockerignore (real API keys never do).
+# Without this, a fresh deploy has no master_account/connectors dir at all and
+# the accounts UI 404s until someone manually creates it on the server.
+COPY bots/credentials  /opt/seed-bots/credentials
 
 # --- my-trading: make the Hyperliquid HIP-3 builder-dex markets backtestable ---
 # Hummingbot excludes hyperliquid from backtesting (can't build the connector to

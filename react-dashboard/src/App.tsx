@@ -1,6 +1,7 @@
 import { Route, Routes } from "react-router-dom"
 
 import { Layout } from "@/components/Layout"
+import { Accounts } from "@/pages/Accounts"
 import { Analysis } from "@/pages/Analysis"
 import { Controllers } from "@/pages/Controllers"
 import { Home } from "@/pages/Home"
@@ -14,6 +15,7 @@ export function App() {
     <Routes>
       <Route element={<Layout />}>
         <Route index element={<Home />} />
+        <Route path="accounts" element={<Accounts />} />
         <Route path="controllers" element={<Controllers />} />
         <Route path="optimize" element={<Optimize />} />
         <Route path="deploy" element={<Deploy />} />
