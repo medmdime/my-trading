@@ -5,15 +5,25 @@ import { toast } from "sonner"
 import {
   getAllControllerConfigs,
   getHistoricalCandles,
+  runBacktest,
   saveControllerConfig,
   type ControllerConfig,
 } from "@/lib/api"
 import { fmtNum, fmtUsd, pnlColor } from "@/lib/format"
+import { normalizeExecutor, processedToRows, summarize } from "@/lib/trades"
 import { DEFAULT_RANGES, runOptimize, type Candidate } from "@/lib/optimize"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
+
+interface EngineResult {
+  net: number
+  trades: number
+  win: number
+  maxDD: number
+  rar: number
+}
 
 const originBadge: Record<Candidate["origin"], { label: string; cls: string }> = {
   search: { label: "search", cls: "bg-muted text-muted-foreground" },
@@ -37,7 +47,46 @@ export function Optimize() {
   const [err, setErr] = React.useState<string | null>(null)
   const [selected, setSelected] = React.useState<number | null>(null)
 
+  // Engine-verified numbers for the top finalists (real /backtesting/run).
+  const [verifying, setVerifying] = React.useState(false)
+  const [verified, setVerified] = React.useState<Record<number, EngineResult>>({})
+
   const cfg: ControllerConfig | undefined = (configs.data ?? []).find((c) => c.id === baseId)
+
+  async function verifyTop(cands: Candidate[], interval: string, days: number) {
+    setVerifying(true)
+    setVerified({})
+    const now = Math.floor(Date.now() / 1000)
+    const start = now - days * 86400
+    for (let idx = 0; idx < cands.length; idx++) {
+      try {
+        const req = {
+          start_time: start,
+          end_time: now,
+          backtesting_resolution: interval,
+          trade_cost: 0.0006,
+          config: { ...cands[idx].config, id: String(cands[idx].config.id ?? "opt") },
+        }
+        let bt = await runBacktest(req)
+        for (let r = 0; r < 3 && processedToRows(bt?.processed_data).length === 0; r++) bt = await runBacktest(req)
+        const trades = (bt?.executors ?? []).map(normalizeExecutor)
+        const s = summarize(trades)
+        let eq = 0
+        let peak = 0
+        let dd = 0
+        for (const t of trades) {
+          eq += t.netPnlQuote
+          peak = Math.max(peak, eq)
+          dd = Math.min(dd, eq - peak)
+        }
+        const rar = dd < 0 ? s.netPnl / Math.abs(dd) : s.netPnl > 0 ? Infinity : 0
+        setVerified((v) => ({ ...v, [idx]: { net: s.netPnl, trades: s.count, win: s.winRate, maxDD: dd, rar } }))
+      } catch {
+        setVerified((v) => ({ ...v, [idx]: { net: NaN, trades: 0, win: 0, maxDD: 0, rar: NaN } }))
+      }
+    }
+    setVerifying(false)
+  }
 
   async function run() {
     if (!cfg) return
@@ -61,9 +110,11 @@ export function Optimize() {
         setProgress,
       )
       setResults(res)
+      setRunning(false)
+      // Confirm the sim's top finalists against the real backtest engine.
+      await verifyTop(res.slice(0, 6), interval, days)
     } catch (e) {
       setErr((e as Error).message)
-    } finally {
       setRunning(false)
     }
   }
@@ -143,6 +194,7 @@ export function Optimize() {
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
+            <VerifyBanner verified={verified} verifying={verifying} top={top} />
             <div className="overflow-auto rounded-md border text-xs">
               <table className="w-full">
                 <thead className="bg-muted/40 text-muted-foreground">
@@ -152,9 +204,10 @@ export function Optimize() {
                     <th className="px-2 py-1.5 text-left font-medium">RL/VL · mult · SL/TP · trail</th>
                     <th className="px-2 py-1.5 text-right font-medium">Robust RAR</th>
                     <th className="px-2 py-1.5 text-right font-medium">Fold PnL</th>
-                    <th className="px-2 py-1.5 text-right font-medium">Total PnL</th>
-                    <th className="px-2 py-1.5 text-right font-medium">Trades</th>
+                    <th className="px-2 py-1.5 text-right font-medium">Sim PnL</th>
                     <th className="px-2 py-1.5 text-right font-medium">Overfit gap</th>
+                    <th className="px-2 py-1.5 text-right font-medium text-primary">✓ Engine PnL</th>
+                    <th className="px-2 py-1.5 text-right font-medium text-primary">✓ Trades</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -163,6 +216,7 @@ export function Optimize() {
                     const ts = g.trailing_stop as { activation_price?: number; trailing_delta?: number } | undefined
                     const ob = originBadge[c.origin]
                     const fragile = c.overfitGap > Math.abs(c.robust) * 2 + 1
+                    const ver = verified[i]
                     return (
                       <tr
                         key={i}
@@ -190,10 +244,15 @@ export function Optimize() {
                         <td className={`px-2 py-1.5 text-right tabular-nums ${pnlColor(c.totalPnl)}`}>
                           {fmtUsd(c.totalPnl)}
                         </td>
-                        <td className="px-2 py-1.5 text-right tabular-nums">{c.totalTrades}</td>
                         <td className={`px-2 py-1.5 text-right tabular-nums ${fragile ? "text-red-500" : "text-muted-foreground"}`}>
                           {fmtNum(c.overfitGap, 2)}
                           {fragile ? " ⚠" : ""}
+                        </td>
+                        <td className={`px-2 py-1.5 text-right font-semibold tabular-nums ${ver ? pnlColor(ver.net) : ""}`}>
+                          {ver ? fmtUsd(ver.net) : i < 6 ? (verifying ? "…" : "—") : ""}
+                        </td>
+                        <td className="px-2 py-1.5 text-right tabular-nums">
+                          {ver ? ver.trades : i < 6 ? (verifying ? "…" : "—") : ""}
                         </td>
                       </tr>
                     )
@@ -213,6 +272,44 @@ export function Optimize() {
             )}
           </CardContent>
         </Card>
+      )}
+    </div>
+  )
+}
+
+function VerifyBanner({
+  verified,
+  verifying,
+  top,
+}: {
+  verified: Record<number, EngineResult>
+  verifying: boolean
+  top: Candidate[]
+}) {
+  const entries = Object.entries(verified).map(([i, v]) => ({ i: Number(i), v }))
+  const done = entries.filter((e) => Number.isFinite(e.v.net))
+  const best = done.length ? done.reduce((a, b) => (b.v.net > a.v.net ? b : a)) : null
+  const anyPositive = done.some((e) => e.v.net > 0)
+  return (
+    <div className="rounded-md border-l-2 border-primary/50 bg-primary/5 p-3 text-xs">
+      <div className="font-medium">
+        {verifying
+          ? `Verifying finalists against the real backtest engine… (${done.length}/${Math.min(6, top.length)})`
+          : done.length
+            ? `Engine-verified ${done.length} finalists.`
+            : "Finalists will be re-checked with the real engine."}
+      </div>
+      {best && (
+        <div className="mt-1 text-muted-foreground">
+          Best by the <b>real engine</b>: config #{best.i + 1} → {fmtUsd(best.v.net)} over {best.v.trades}{" "}
+          trades ({fmtNum(best.v.win, 0)}% win).{" "}
+          {!anyPositive && (
+            <span className="text-amber-600 dark:text-amber-400">
+              None are profitable on this pair/window — try another pair, a different window, or
+              wider ranges.
+            </span>
+          )}
+        </div>
       )}
     </div>
   )

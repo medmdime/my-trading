@@ -10,13 +10,13 @@ import {
   deleteControllerConfig,
   getAllControllerConfigs,
   getAvailableControllers,
-  getHistoricalCandles,
+  runBacktest,
   saveControllerConfig,
   validateControllerConfig,
   type ControllerConfig,
 } from "@/lib/api"
 import { cleanCloseType, fmtNum, fmtUsd, pnlColor } from "@/lib/format"
-import { computeChannel, simulateBreakout, summarize } from "@/lib/trades"
+import { normalizeExecutor, processedToRows, summarize } from "@/lib/trades"
 import { CandleChart, type Candle, type OverlayLine } from "@/components/CandleChart"
 import { ConfirmButton } from "@/components/ConfirmButton"
 import { Badge } from "@/components/ui/badge"
@@ -558,32 +558,36 @@ function BacktestInline({ form }: { form: Record<string, unknown> }) {
   const pair = String(form.candles_trading_pair ?? form.trading_pair ?? "")
   const interval = String(form.interval ?? "15m")
 
+  // Uses the REAL /backtesting/run engine (retrying past the HL throttle) so these
+  // numbers are exactly what the engine reports — what you'll be judged against.
   const q = useQuery({
     queryKey: ["cfgBacktest", run],
     queryFn: async () => {
       const c = snap.current!
-      const connector = String(c.candles_connector ?? c.connector_name ?? "hyperliquid_perpetual")
-      const cpair = String(c.candles_trading_pair ?? c.trading_pair ?? "")
-      const cinterval = String(c.interval ?? "15m")
       const now = Math.floor(Date.now() / 1000)
-      const start = now - days * 86400
-      return getHistoricalCandles(connector, cpair, cinterval, start, now)
+      const req = {
+        start_time: now - days * 86400,
+        end_time: now,
+        backtesting_resolution: String(c.interval ?? "15m"),
+        trade_cost: 0.0006,
+        config: { ...c, id: String(c.id ?? "check") },
+      }
+      let bt = await runBacktest(req)
+      for (let i = 0; i < 4 && processedToRows(bt?.processed_data).length === 0; i++) {
+        bt = await runBacktest(req)
+      }
+      return bt
     },
     enabled: run > 0,
     staleTime: 60_000,
-    retry: 2,
   })
 
-  const cfg = snap.current
-  const candles = q.data ?? []
-  const rows = React.useMemo(
-    () =>
-      cfg
-        ? computeChannel(candles, Number(cfg.range_lookback ?? 20), Number(cfg.vol_lookback ?? 20), Number(cfg.rel_volume_mult ?? 2))
-        : [],
-    [candles, cfg],
+  const bt = q.data
+  const rows = React.useMemo(() => processedToRows(bt?.processed_data), [bt])
+  const trades = React.useMemo(
+    () => (bt?.executors ?? []).map(normalizeExecutor).sort((a, b) => a.ts - b.ts),
+    [bt],
   )
-  const trades = React.useMemo(() => (cfg ? simulateBreakout(candles, cfg) : []), [candles, cfg])
   const s = summarize(trades)
 
   const { pf, maxDD } = React.useMemo(() => {
@@ -650,15 +654,17 @@ function BacktestInline({ form }: { form: Record<string, unknown> }) {
       </div>
       {run === 0 ? (
         <p className="text-xs text-muted-foreground">
-          Runs your current form values on the last {days} days of {interval} candles (offset{" "}
-          {String(form.signal_candle_offset ?? 1)}) — no save needed.
+          Runs your current form values through the real backtest engine on the last {days} days of{" "}
+          {interval} candles — no save needed. (The backtest is offset-agnostic.)
         </p>
       ) : q.isError ? (
         <p className="text-xs text-red-500">{(q.error as Error).message}</p>
       ) : q.isFetching ? (
-        <p className="text-xs text-muted-foreground">Loading candles &amp; simulating…</p>
+        <p className="text-xs text-muted-foreground">Running the backtest engine…</p>
       ) : chartCandles.length === 0 ? (
-        <p className="text-xs text-amber-500">No candles for {pair} {interval}.</p>
+        <p className="text-xs text-amber-500">
+          Engine returned no candles (Hyperliquid throttled) — click Backtest again.
+        </p>
       ) : (
         <div className="space-y-2">
           <div className="grid grid-cols-3 gap-2 sm:grid-cols-6">
@@ -673,7 +679,7 @@ function BacktestInline({ form }: { form: Record<string, unknown> }) {
           <p className="text-[11px] text-muted-foreground">
             {s.count === 0
               ? "No trades fired in this window — loosen the volume gate / widen the range, or try more days."
-              : "Green ▲/▼ = winners, red = losers. Modeled on closed candles (matches the engine)."}
+              : "Green ▲/▼ = winners, red = losers. Numbers are from the real backtest engine."}
           </p>
         </div>
       )}

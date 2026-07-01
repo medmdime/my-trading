@@ -427,7 +427,11 @@ export function simulateBreakout(
   const rl = g("range_lookback", 20)
   const vl = g("vol_lookback", 20)
   const mult = g("rel_volume_mult", 2)
-  const offset = g("signal_candle_offset", 0)
+  // The Hummingbot BACKTEST ignores signal_candle_offset (verified: offset 0 and 1
+  // give identical results) — it enters on the breakout candle via the vectorized
+  // signal column. So to MODEL THE BACKTEST we always use offset 0, regardless of
+  // the config's offset (which only affects live).
+  const offset = 0
   const sl = g("stop_loss", 0)
   const tp = g("take_profit", 0)
   const timeLimit = g("time_limit", 0)
