@@ -28,6 +28,8 @@ export const DEFAULT_RANGES: ParamRange[] = [
   { key: "take_profit", label: "Take profit", min: 0.004, max: 0.05, pct: true },
   { key: "activation_price", label: "Trail activation", min: 0.003, max: 0.02, trailing: true, pct: true },
   { key: "trailing_delta", label: "Trail delta", min: 0.002, max: 0.015, trailing: true, pct: true },
+  { key: "cooldown_time", label: "Cooldown (s)", min: 300, max: 3600, int: true },
+  { key: "time_limit", label: "Time limit (s)", min: 900, max: 14400, int: true },
 ]
 
 type Cfg = Record<string, unknown>
@@ -79,7 +81,9 @@ export interface Candidate {
   totalPnl: number
   totalTrades: number
   overfitGap: number // spread of rar across folds; large = fragile
-  origin: "search" | "surface" | "centroid"
+  origin: "search" | "surface" | "centroid" | "refine"
+  /** Score on the held-out most-recent window the search never saw (top finalists only). */
+  holdout?: FoldScore
 }
 
 export interface OptimizeOpts {
@@ -87,6 +91,8 @@ export interface OptimizeOpts {
   folds: number
   minTradesPerFold: number
   sizeQuote: number
+  /** Fraction of the most-recent candles reserved as an unseen final exam (default 0.25). */
+  holdoutFrac?: number
 }
 
 function makeFolds(candles: HistCandle[], k: number): HistCandle[][] {
@@ -179,6 +185,14 @@ function surfaceOptimum(ranges: ParamRange[], X: number[][], y: number[]): numbe
   return out
 }
 
+function gauss(): number {
+  let u = 0
+  let v = 0
+  while (u === 0) u = Math.random()
+  while (v === 0) v = Math.random()
+  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v)
+}
+
 export async function runOptimize(
   candles: HistCandle[],
   base: Cfg,
@@ -186,41 +200,83 @@ export async function runOptimize(
   opts: OptimizeOpts,
   onProgress?: (frac: number) => void,
 ): Promise<Candidate[]> {
-  const folds = makeFolds(candles, opts.folds)
+  // Reserve the most-recent slice as a HOLDOUT the search never touches — the
+  // final exam that catches configs which only worked on the tuned period.
+  const sorted = [...candles].sort((a, b) => a.timestamp - b.timestamp)
+  const holdoutFrac = opts.holdoutFrac ?? 0.25
+  const split = Math.floor(sorted.length * (1 - holdoutFrac))
+  const searchCandles = sorted.slice(0, split)
+  // Include warmup bars before the holdout so the channel exists from its start;
+  // trades opened before the boundary are filtered out.
+  const WARMUP = 50
+  const holdoutCandles = sorted.slice(Math.max(0, split - WARMUP))
+  const holdoutStartTs = sorted[split]?.timestamp ?? Infinity
+
+  const folds = makeFolds(searchCandles, opts.folds)
   const cands: Candidate[] = []
   const sampleVals: number[][] = []
   const scores: number[] = []
 
-  for (let s = 0; s < opts.samples; s++) {
-    const vals = ranges.map((r) => r.min + Math.random() * (r.max - r.min))
-    const cand = evalCandidate(base, ranges, vals, folds, opts, "search")
+  const push = (vals: number[], origin: Candidate["origin"]) => {
+    const cand = evalCandidate(base, ranges, vals, folds, opts, origin)
     cands.push(cand)
     sampleVals.push(vals)
     scores.push(Number.isFinite(cand.robust) ? cand.robust : -999)
+    return cand
+  }
+
+  // Stage 1 — explore: uniform random over the full ranges.
+  const explore = Math.ceil(opts.samples * 0.6)
+  for (let s = 0; s < explore; s++) {
+    push(ranges.map((r) => r.min + Math.random() * (r.max - r.min)), "search")
     if (s % 25 === 0) {
       onProgress?.(s / opts.samples)
       await new Promise((r) => setTimeout(r, 0)) // yield so the UI stays live
     }
   }
 
+  // Stage 2 — refine: Gaussian jitter around the best seeds so the search
+  // zooms into the promising region instead of wasting samples everywhere.
+  const seeds = [...cands].sort((a, b) => b.robust - a.robust).slice(0, 8)
+  const refine = opts.samples - explore
+  for (let s = 0; s < refine && seeds.length; s++) {
+    const seed = seeds[s % seeds.length]
+    const vals = ranges.map((r, i) => {
+      const sigma = (r.max - r.min) * 0.12
+      return Math.min(r.max, Math.max(r.min, seed.vals[i] + gauss() * sigma))
+    })
+    push(vals, "refine")
+    if (s % 25 === 0) {
+      onProgress?.((explore + s) / opts.samples)
+      await new Promise((r) => setTimeout(r, 0))
+    }
+  }
+
   // Least-squares response-surface optimum (the regularized pick).
   try {
     const surf = surfaceOptimum(ranges, sampleVals, scores)
-    cands.push(evalCandidate(base, ranges, surf, folds, opts, "surface"))
+    push(surf, "surface")
   } catch {
     /* singular fit — skip */
   }
 
   // Centroid of the top 5% robust configs (good-region center).
   const top = [...cands]
-    .filter((c) => c.origin === "search")
+    .filter((c) => c.origin === "search" || c.origin === "refine")
     .sort((a, b) => b.robust - a.robust)
     .slice(0, Math.max(3, Math.ceil(opts.samples * 0.05)))
   if (top.length) {
     const cVals = ranges.map((_, i) => top.reduce((s, c) => s + c.vals[i], 0) / top.length)
-    cands.push(evalCandidate(base, ranges, cVals, folds, opts, "centroid"))
+    push(cVals, "centroid")
+  }
+
+  // Final exam: score the top finalists on the unseen holdout window.
+  const ranked = cands.sort((a, b) => b.robust - a.robust)
+  for (const c of ranked.slice(0, 25)) {
+    const trades = simulateBreakout(holdoutCandles, c.config).filter((t) => t.ts >= holdoutStartTs)
+    c.holdout = scoreTrades(trades, opts.sizeQuote, Math.max(1, Math.floor(opts.minTradesPerFold / 2)))
   }
 
   onProgress?.(1)
-  return cands.sort((a, b) => b.robust - a.robust)
+  return ranked
 }

@@ -27,6 +27,7 @@ interface EngineResult {
 
 const originBadge: Record<Candidate["origin"], { label: string; cls: string }> = {
   search: { label: "search", cls: "bg-muted text-muted-foreground" },
+  refine: { label: "refined", cls: "bg-emerald-700 text-white" },
   surface: { label: "least-squares", cls: "bg-violet-600 text-white" },
   centroid: { label: "region center", cls: "bg-sky-600 text-white" },
 }
@@ -126,10 +127,11 @@ export function Optimize() {
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Config Optimizer</h1>
         <p className="text-sm text-muted-foreground">
-          Searches parameters on the local sim, scores each by <b>risk-adjusted return</b> across{" "}
-          <b>walk-forward folds</b>, and keeps only configs robust in every fold. A least-squares
-          response surface + region-centroid are added as regularized cross-checks — the goal is a
-          config that generalizes, not one that overfits one lucky day.
+          Two-stage search (explore, then refine around the best region) scored by{" "}
+          <b>risk-adjusted return</b> across <b>walk-forward folds</b>. The most recent 25% of the
+          window is a <b>holdout</b> the search never sees — a final exam against overfitting — and
+          the top finalists are re-run through the <b>real backtest engine</b>. Trust the order:
+          Robust → Holdout → ✓Engine.
         </p>
       </div>
 
@@ -205,6 +207,7 @@ export function Optimize() {
                     <th className="px-2 py-1.5 text-right font-medium">Robust RAR</th>
                     <th className="px-2 py-1.5 text-right font-medium">Fold PnL</th>
                     <th className="px-2 py-1.5 text-right font-medium">Sim PnL</th>
+                    <th className="px-2 py-1.5 text-right font-medium">Holdout</th>
                     <th className="px-2 py-1.5 text-right font-medium">Overfit gap</th>
                     <th className="px-2 py-1.5 text-right font-medium text-primary">✓ Engine PnL</th>
                     <th className="px-2 py-1.5 text-right font-medium text-primary">✓ Trades</th>
@@ -244,6 +247,12 @@ export function Optimize() {
                         <td className={`px-2 py-1.5 text-right tabular-nums ${pnlColor(c.totalPnl)}`}>
                           {fmtUsd(c.totalPnl)}
                         </td>
+                        <td
+                          className={`px-2 py-1.5 text-right tabular-nums ${c.holdout ? pnlColor(c.holdout.netPnl) : "text-muted-foreground"}`}
+                          title="PnL on the most-recent window the search never saw"
+                        >
+                          {c.holdout ? `${fmtUsd(c.holdout.netPnl)} (${c.holdout.trades}t)` : "—"}
+                        </td>
                         <td className={`px-2 py-1.5 text-right tabular-nums ${fragile ? "text-red-500" : "text-muted-foreground"}`}>
                           {fmtNum(c.overfitGap, 2)}
                           {fragile ? " ⚠" : ""}
@@ -262,9 +271,9 @@ export function Optimize() {
             </div>
             <p className="text-xs text-muted-foreground">
               <b>Robust RAR</b> = worst fold's PnL ÷ drawdown — a config must earn it in every
-              sub-period. <b>Fold PnL</b> shows each fold; if they're wildly different (high{" "}
-              <b>overfit gap ⚠</b>) the config is fragile, not good. Prefer even fold PnLs +
-              enough trades over a big total.
+              sub-period. <b>Holdout</b> = PnL on the most-recent unseen window: a positive robust
+              score with a negative holdout means the config memorized the past — reject it.{" "}
+              <b>✓ Engine</b> columns are the real backtester's verdict — the numbers that decide.
             </p>
 
             {selected != null && top[selected] && (
