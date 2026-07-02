@@ -1,5 +1,4 @@
 import asyncio
-import hashlib
 import json
 import logging
 import os
@@ -72,46 +71,14 @@ def _build_trading_rules_from_cache(connector_name: str) -> Dict[str, TradingRul
     return rules
 
 
-# --- PATCH (my-trading): persistent candle cache -------------------------------
+# --- PATCH (my-trading): persistent candle store -------------------------------
 # Hyperliquid's public candle endpoint is IP-weight rate-limited (HTTP 429) and
 # that limit is SHARED with the live bots' connector on the same server IP, so a
-# burst of backtests can starve live trading. We cache each fetched window to
-# disk keyed by (connector, pair, interval, window) so a given window is pulled
-# from Hyperliquid exactly once and then reused forever — the Compare view (which
-# re-runs the SAME window) and repeated backtests then cost ZERO HL requests.
-_CANDLE_CACHE_DIR = os.environ.get("CANDLE_CACHE_DIR", "/hummingbot-api/bots/.candle_cache")
-
-
-def _candle_cache_path(connector: str, trading_pair: str, interval: str, start, end) -> str:
-    key = f"{connector}|{trading_pair}|{interval}|{int(start)}|{int(end)}"
-    digest = hashlib.md5(key.encode()).hexdigest()[:16]
-    safe_pair = trading_pair.replace("/", "-").replace(":", "-")
-    return os.path.join(_CANDLE_CACHE_DIR, f"{connector}_{safe_pair}_{interval}_{digest}.pkl")
-
-
-def _read_candle_cache(path: str):
-    try:
-        if os.path.exists(path):
-            df = pd.read_pickle(path)
-            if df is not None and not df.empty:
-                logger.info(f"Candle cache HIT: {path} ({len(df)} rows)")
-                return df
-    except Exception as e:  # pragma: no cover - defensive
-        logger.warning(f"Candle cache read failed ({path}): {e}")
-    return None
-
-
-def _write_candle_cache(path: str, df) -> None:
-    try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        # Atomic write: parallel backtests may race on the same window; a partial
-        # pickle must never be visible to a concurrent reader.
-        tmp = f"{path}.tmp.{os.getpid()}"
-        df.to_pickle(tmp)
-        os.replace(tmp, path)
-        logger.info(f"Candle cache WRITE: {path} ({len(df)} rows)")
-    except Exception as e:  # pragma: no cover - defensive
-        logger.warning(f"Candle cache write failed ({path}): {e}")
+# burst of backtests can starve live trading. All candle reads go through the
+# per-market CSV store (one file per connector/pair/interval + covered-span
+# metadata): only never-fetched gaps hit Hyperliquid, everything else is served
+# from disk. See candle_store.py.
+from hummingbot.strategy_v2.backtesting import candle_store
 # --- END PATCH -----------------------------------------------------------------
 
 
@@ -203,73 +170,55 @@ class BacktestingDataProvider(MarketDataProvider):
                 return existing_feed
         # Create a new feed or restart the existing one with updated max_records
         candle_feed = CandlesFactory.get_candle(config)
-        # --- PATCH (my-trading): persistent candle cache (wire-up) ---
-        # Normalize the fetch window so EVERY config over the same backtest window
-        # shares one cache entry: the warmup buffer depends on max_records (which
-        # varies per optimizer candidate via the lookbacks), so we fetch a fixed
-        # generous buffer and round the bounds — otherwise each candidate would
-        # get its own cache key and still hammer Hyperliquid.
+        # --- PATCH (my-trading): candle store (wire-up) ---
+        # Normalize the fetch window (fixed generous warmup buffer, day-floored
+        # start, interval-ceiled end) so every optimizer candidate over the same
+        # backtest window asks the store for the same range. The store fetches
+        # only never-covered gaps from the exchange; a warm market costs ZERO
+        # Hyperliquid requests.
         interval_secs = CandlesBase.interval_to_seconds[config.interval]
         buffer_secs = max(config.max_records, 500) * interval_secs
         fetch_start = int((self.start_time - buffer_secs) // 86400 * 86400)
         fetch_end = int(-(-self.end_time // interval_secs) * interval_secs)
-        cache_path = _candle_cache_path(
-            config.connector, config.trading_pair, config.interval, fetch_start, fetch_end
-        )
-        cached_df = _read_candle_cache(cache_path)
-        if cached_df is not None:
-            self.candles_feeds[key] = cached_df
-            return cached_df
-        hist_config = HistoricalCandlesConfig(
-            connector_name=config.connector,
-            trading_pair=config.trading_pair,
-            interval=config.interval,
-            start_time=fetch_start,
-            end_time=fetch_end,
-        )
-        # --- PATCH (my-trading) ---
-        # Hyperliquid's public candle endpoint intermittently returns an EMPTY
-        # snapshot when called repeatedly (IP weight-based rate limiting). The
-        # backtest engine then runs over zero candles and silently produces 0
-        # trades -> the dashboard reports "no trades in this window" and the
-        # Compare-vs-Live view has nothing to compare even though the strategy
-        # would have traded. Empty candles are a TRANSIENT data failure, not a
-        # real "no signal" result, so retry with backoff until we get data.
-        candles_df = await candle_feed.get_historical_candles(config=hist_config)
-        attempts = int(os.environ.get("BACKTEST_CANDLE_RETRIES", "5"))
-        delay = 1.5
-        for attempt in range(attempts):
-            if candles_df is not None and not candles_df.empty:
-                break
-            logger.warning(
-                f"Empty candles for {config.connector} {config.trading_pair} "
-                f"{config.interval} (attempt {attempt + 1}/{attempts}); "
-                f"Hyperliquid likely throttling — retrying in {delay:.1f}s"
+
+        async def _fetch_gap(gap_start: int, gap_end: int):
+            # Hyperliquid intermittently returns an EMPTY snapshot when called
+            # repeatedly (IP weight-based rate limiting). Empty candles are a
+            # TRANSIENT data failure, not a real "no signal" result, so retry
+            # with backoff; a still-empty gap is left uncovered (retried on the
+            # next request) rather than poisoning the store.
+            hist_config = HistoricalCandlesConfig(
+                connector_name=config.connector,
+                trading_pair=config.trading_pair,
+                interval=config.interval,
+                start_time=gap_start,
+                end_time=gap_end,
             )
-            await asyncio.sleep(delay)
-            delay = min(delay * 1.6, 8.0)
-            candles_df = await candle_feed.get_historical_candles(config=hist_config)
+            df = await candle_feed.get_historical_candles(config=hist_config)
+            attempts = int(os.environ.get("BACKTEST_CANDLE_RETRIES", "5"))
+            delay = 1.5
+            for attempt in range(attempts):
+                if df is not None and not df.empty:
+                    break
+                logger.warning(
+                    f"Empty candles for {config.connector} {config.trading_pair} "
+                    f"{config.interval} gap [{gap_start},{gap_end}] "
+                    f"(attempt {attempt + 1}/{attempts}); retrying in {delay:.1f}s"
+                )
+                await asyncio.sleep(delay)
+                delay = min(delay * 1.6, 8.0)
+                df = await candle_feed.get_historical_candles(config=hist_config)
+            return df
+
+        candles_df, _info = await candle_store.get_or_fetch(
+            config.connector, config.trading_pair, config.interval,
+            fetch_start, fetch_end, _fetch_gap,
+        )
         if candles_df is None or candles_df.empty:
             logger.error(
-                f"Still no candles for {config.connector} {config.trading_pair} "
-                f"{config.interval} after {attempts} attempts — backtest will be empty."
+                f"No candles for {config.connector} {config.trading_pair} "
+                f"{config.interval} in [{fetch_start},{fetch_end}] — backtest will be empty."
             )
-        else:
-            # Persist so this window is fetched from Hyperliquid exactly once —
-            # but ONLY if the snapshot plausibly covers the window. HL sometimes
-            # returns a truncated (non-empty) page mid-throttle; caching that
-            # would serve a partial window forever. Threshold is 50% so markets
-            # with genuine gaps (HIP-3 silver/sp500) can still cache.
-            expected_bars = max(1, (fetch_end - fetch_start) // interval_secs)
-            coverage = len(candles_df) / expected_bars
-            if coverage >= 0.5:
-                _write_candle_cache(cache_path, candles_df)
-            else:
-                logger.warning(
-                    f"Not caching partial candle snapshot for {config.trading_pair} "
-                    f"{config.interval}: {len(candles_df)}/{expected_bars} bars "
-                    f"({coverage:.0%}) — next run will refetch."
-                )
         # --- END PATCH ---
         # TODO: fix pandas-ta improper float index slicing to allow us to use float indexes
         # candles_df = self.ensure_epoch_index(candles_df)

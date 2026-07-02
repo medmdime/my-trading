@@ -1,6 +1,6 @@
 import * as React from "react"
 import { Link, useLocation } from "react-router-dom"
-import { Boxes, Home, KeyRound, LineChart, Radio, Rocket, SlidersHorizontal, Wand2 } from "lucide-react"
+import { Boxes, Database, Home, KeyRound, LineChart, Radio, Rocket, SlidersHorizontal, Wand2 } from "lucide-react"
 
 import { IS_LIVE, TARGET_LABEL } from "@/lib/env"
 import {
@@ -36,7 +36,10 @@ const GROUPS = [
   },
   {
     label: "Backtest & Analysis",
-    items: [{ to: "/analysis", label: "Trade Analysis", icon: LineChart, end: false }],
+    items: [
+      { to: "/analysis", label: "Trade Analysis", icon: LineChart, end: false },
+      { to: "/cache", label: "Data Cache", icon: Database, end: false },
+    ],
   },
 ]
 

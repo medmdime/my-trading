@@ -32,6 +32,15 @@ COPY api-patches/hl_trading_rules.json          /opt/seed-bots/hl_trading_rules.
 COPY api-patches/backtesting_data_provider.py   ${HB_SITE}/strategy_v2/backtesting/backtesting_data_provider.py
 COPY api-patches/position_executor_simulator.py ${HB_SITE}/strategy_v2/backtesting/executors_simulator/position_executor_simulator.py
 
+# --- my-trading: per-market candle CSV store + /candles-cache management API ---
+# One CSV per (connector, pair, interval) in the bind-mounted bots/.candle_cache
+# with covered-span metadata: backtests, the optimizer and charts all read it,
+# and only never-fetched gaps hit Hyperliquid. The router exposes inventory /
+# prefetch / cached-candles / delete / CSV download for the dashboard.
+COPY api-patches/candle_store.py                ${HB_SITE}/strategy_v2/backtesting/candle_store.py
+COPY api-patches/candles_cache_router.py        /hummingbot-api/routers/candles_cache.py
+RUN printf '\n# --- my-trading patch: candle cache router ---\nfrom routers import candles_cache as _candles_cache_router  # noqa: E402\napp.include_router(_candles_cache_router.router, dependencies=[Depends(auth_user)])\n' >> /hummingbot-api/main.py
+
 COPY api-seed-entrypoint.sh /usr/local/bin/api-seed-entrypoint.sh
 RUN chmod +x /usr/local/bin/api-seed-entrypoint.sh
 

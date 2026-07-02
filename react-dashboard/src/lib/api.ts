@@ -347,24 +347,82 @@ export interface HistCandle {
 }
 
 /**
- * Raw OHLCV over an arbitrary window. Unlike /backtesting/run this returns
- * candles reliably (server-side cached), so we use it to draw charts + rebuild
- * the channel locally instead of paying the backtest candle-throttle tax.
+ * Raw OHLCV over an arbitrary window, served from the server's candle CSV
+ * store (/candles-cache/candles): disk-first, only missing gaps hit the
+ * exchange. Falls back to /market-data/historical-candles when the API image
+ * doesn't have the cache router yet (pre-deploy).
  */
-export const getHistoricalCandles = (
+export const getHistoricalCandles = async (
+  connector: string,
+  tradingPair: string,
+  interval: string,
+  startTime: number,
+  endTime: number,
+): Promise<HistCandle[]> => {
+  const body = {
+    connector_name: connector,
+    trading_pair: tradingPair,
+    interval,
+    start_time: startTime,
+    end_time: endTime,
+  }
+  try {
+    return await apiPost<HistCandle[]>("/candles-cache/candles", body)
+  } catch (e) {
+    if (e instanceof ApiError && (e.status === 404 || e.status === 405)) {
+      return apiPost<HistCandle[]>("/market-data/historical-candles", body)
+    }
+    throw e
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Candle cache (server-side CSV store of market data)
+// ---------------------------------------------------------------------------
+
+export interface CacheEntry {
+  slug: string
+  connector: string | null
+  trading_pair: string | null
+  interval: string | null
+  rows: number
+  first_timestamp: number | null
+  last_timestamp: number | null
+  spans: Array<[number, number]>
+  size_bytes: number
+}
+
+export interface CacheFillResult {
+  rows: number
+  from_cache: boolean
+  gaps_fetched: Array<{ start: number; end: number; rows: number; error?: string }>
+  entry: CacheEntry | null
+}
+
+export const getCandleCache = () => apiGet<CacheEntry[]>("/candles-cache/")
+
+export const fillCandleCache = (
   connector: string,
   tradingPair: string,
   interval: string,
   startTime: number,
   endTime: number,
 ) =>
-  apiPost<HistCandle[]>("/market-data/historical-candles", {
+  apiPost<CacheFillResult>("/candles-cache/fill", {
     connector_name: connector,
     trading_pair: tradingPair,
     interval,
     start_time: startTime,
     end_time: endTime,
   })
+
+export const deleteCandleCache = (connector: string, tradingPair: string, interval: string) =>
+  apiDelete<{ deleted: boolean }>(
+    `/candles-cache/${encodeURIComponent(connector)}/${encodeURIComponent(tradingPair)}/${encodeURIComponent(interval)}`,
+  )
+
+export const candleCacheCsvUrl = (connector: string, tradingPair: string, interval: string) =>
+  `${API_BASE}/candles-cache/${encodeURIComponent(connector)}/${encodeURIComponent(tradingPair)}/${encodeURIComponent(interval)}/csv`
 
 /** Live ticker prices straight from the connector (moves every poll, unlike the
  * signal candle which only updates when a candle closes). */

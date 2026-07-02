@@ -3,6 +3,7 @@ import { Route, Routes } from "react-router-dom"
 import { Layout } from "@/components/Layout"
 import { Accounts } from "@/pages/Accounts"
 import { Analysis } from "@/pages/Analysis"
+import { Cache } from "@/pages/Cache"
 import { Controllers } from "@/pages/Controllers"
 import { Home } from "@/pages/Home"
 import { Deploy } from "@/pages/Deploy"
@@ -23,6 +24,7 @@ export function App() {
         <Route path="inspector" element={<Inspector />} />
         <Route path="inspector/:botName" element={<Inspector />} />
         <Route path="analysis" element={<Analysis />} />
+        <Route path="cache" element={<Cache />} />
       </Route>
     </Routes>
   )
