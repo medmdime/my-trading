@@ -13,6 +13,7 @@ services:
     build:
       context: .
       dockerfile: api.Dockerfile
+    restart: unless-stopped
     ports:
       # host 8000 is taken by Coolify on the server — publish the API on 8002 instead
       - "8002:8000"
@@ -39,6 +40,11 @@ services:
       - GATEWAY_URL=http://host.docker.internal:15888
       - HOST_PROC=/host/proc
       - HOST_DISK_PATH=/host/disk-probe
+      # Candle CSV database (candle_store.py + /candles-cache router). Lives
+      # inside the bind-mounted ./bots so it persists across redeploys.
+      - CANDLE_CACHE_DIR=/hummingbot-api/bots/.candle_cache
+      # Retries per candle gap-fetch when Hyperliquid throttles (empty snapshot).
+      - BACKTEST_CANDLE_RETRIES=5
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
@@ -62,6 +68,7 @@ services:
     build:
       context: ./react-dashboard
       dockerfile: Dockerfile
+    restart: unless-stopped
     ports:
       - "8090:80"
     networks:
