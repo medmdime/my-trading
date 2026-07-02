@@ -43,6 +43,14 @@ services:
       - "host.docker.internal:host-gateway"
     networks:
       - emqx-bridge
+    # On Coolify this container also joins the shared "coolify" proxy network.
+    # Without pinning which network Traefik should route through, it picks a
+    # backend IP non-deterministically on each (re)creation — if it picks the
+    # emqx-bridge IP (which coolify-proxy isn't on), every proxied request
+    # hangs until Traefik's own dial timeout fires (504, or nothing at all).
+    # Harmless on plain `docker compose` (no such network/label there).
+    labels:
+      - "traefik.docker.network=coolify"
     depends_on:
       - postgres
 
@@ -58,6 +66,9 @@ services:
       - "8090:80"
     networks:
       - emqx-bridge
+    # See the same label on hummingbot-api above — same Traefik multi-network gotcha.
+    labels:
+      - "traefik.docker.network=coolify"
     depends_on:
       - hummingbot-api
 
@@ -87,6 +98,8 @@ services:
       emqx-bridge:
         aliases:
           - node1.emqx.local
+    labels:
+      - "traefik.docker.network=coolify"
     healthcheck:
       test: [ "CMD", "/opt/emqx/bin/emqx_ctl", "status" ]
       interval: 5s
