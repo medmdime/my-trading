@@ -23,7 +23,6 @@ import {
   normalizeExecutor,
   processedToRows,
   reconcileTrades,
-  simulateBreakout,
   type Trade,
 } from "@/lib/trades"
 import { CandleChart, type Candle, type OverlayLine } from "@/components/CandleChart"
@@ -299,6 +298,30 @@ function LiveVsBacktest({
     retry: 2,
   })
 
+  // The backtest trades come from the REAL engine (same numbers as the old
+  // dashboard / Backtest tab / Optimizer) — the chart channel below is drawn
+  // locally but is display-only. Retries ride out the HL candle throttle.
+  const bt = useQuery({
+    queryKey: ["liveVsBtEngine", config?.id, interval, start, end],
+    queryFn: async () => {
+      const req = {
+        start_time: start,
+        end_time: end,
+        backtesting_resolution: interval,
+        trade_cost: 0.0006,
+        config: { ...config, id: String(config?.id ?? "cmp") },
+      }
+      let last = await runBacktest(req)
+      for (let i = 0; i < 5 && processedToRows(last?.processed_data).length === 0; i++) {
+        await new Promise((r) => setTimeout(r, 700 * (i + 1)))
+        last = await runBacktest(req)
+      }
+      return last
+    },
+    enabled: run && !!config && !!start,
+    staleTime: 5 * 60_000,
+  })
+
   const processed = React.useMemo(
     () =>
       computeChannel(
@@ -326,8 +349,8 @@ function LiveVsBacktest({
   }, [processed])
 
   const btTrades: Trade[] = React.useMemo(
-    () => (config ? simulateBreakout(hist.data ?? [], config) : []),
-    [hist.data, config],
+    () => (bt.data?.executors ?? []).map(normalizeExecutor).sort((a, b) => a.ts - b.ts),
+    [bt.data],
   )
   const markers: Array<SeriesMarker<Time>> = React.useMemo(
     () =>
@@ -337,7 +360,7 @@ function LiveVsBacktest({
     [btTrades, liveTrades],
   )
 
-  const loading = hist.isPending
+  const loading = hist.isPending || bt.isPending
 
   return (
     <Card className="border-primary/40">
@@ -362,10 +385,12 @@ function LiveVsBacktest({
           </div>
         ) : loading ? (
           <p className="text-sm text-muted-foreground">
-            Loading candles &amp; modelling {String(config.id)} over the trade window…
+            Running the backtest engine on {String(config.id)} over the trade window…
           </p>
-        ) : hist.isError ? (
-          <p className="text-sm text-red-500">{(hist.error as Error).message}</p>
+        ) : hist.isError || bt.isError ? (
+          <p className="text-sm text-red-500">
+            {((hist.error ?? bt.error) as Error).message}
+          </p>
         ) : (
           <>
             {candles.length > 0 && (
@@ -373,21 +398,20 @@ function LiveVsBacktest({
             )}
             <div className="rounded-md border-l-2 border-primary/50 bg-primary/5 p-3 text-xs">
               <div className="font-medium">
-                {live ? "Live" : "Actual"}: {liveTrades.length} trades · Backtest (rules on closed{" "}
-                {interval} candles): {btTrades.length} trades
+                {live ? "Live" : "Actual"}: {liveTrades.length} trades · Backtest (real engine,{" "}
+                {interval} resolution): {btTrades.length} trades
               </div>
               <div className="mt-1 text-muted-foreground">
                 {btTrades.length < liveTrades.length
-                  ? `Your bot took ${liveTrades.length - btTrades.length} more trade(s) than the closed-candle rules would. That's because live reads the FORMING candle (offset ${String(config.signal_candle_offset ?? 0)}) and enters intrabar on volume spikes (gate ${fmtNum(Number(config.rel_volume_mult), 2)}×) that don't survive to the candle close.`
+                  ? `Your bot took ${liveTrades.length - btTrades.length} more trade(s) than the engine backtest. If the bot ran offset 0 (forming candle) it entered intrabar on spikes the closed-bar engine never saw; slippage and restarts also contribute.`
                   : btTrades.length > liveTrades.length
-                    ? "The model fired more trades than live — live may have been down, in cooldown, or restarted during this window."
-                    : "Live and the model fired the same number of trades here."}
+                    ? "The engine fired more trades than live — live may have been down, in cooldown, or restarted during this window."
+                    : "Live and the engine fired the same number of trades here."}
               </div>
             </div>
             <p className="text-xs text-muted-foreground">
-              Circles = {live ? "live" : "actual"} entries · arrows = modeled entries · green =
-              winner, red = loser. Where circles have no matching arrow, live entered on a
-              forming-candle spike the closed-bar rules never saw.
+              Circles = {live ? "live" : "actual"} entries · arrows = engine-backtest entries ·
+              green = winner, red = loser.
             </p>
 
             <TradeReconciliation live={liveTrades} backtest={btTrades} tol={iv * 2} liveLabel={live ? "Live" : "Actual"} />
@@ -403,8 +427,7 @@ function LiveVsBacktest({
                 <div className="mb-2 text-xs font-medium">Backtest aggregate ({btTrades.length})</div>
                 {btTrades.length === 0 ? (
                   <p className="text-sm text-muted-foreground">
-                    The rules fire no trades on closed {interval} candles in this window — every live
-                    entry came from an intrabar/forming-candle spike.
+                    The engine fires no trades in this window with this config.
                   </p>
                 ) : (
                   <TradeSummaryCards trades={btTrades} />
