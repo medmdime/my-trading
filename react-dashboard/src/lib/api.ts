@@ -100,6 +100,7 @@ export interface SingleBotStatus {
       { status: string; performance: ControllerPerformance; custom_info: DecisionInfo }
     >
     error_logs: ErrorLog[]
+    general_logs?: ErrorLog[]
   }
 }
 

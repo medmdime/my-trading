@@ -9,6 +9,7 @@ import {
   getPrices,
   type ControllerConfig,
   type DecisionInfo,
+  type ErrorLog,
 } from "@/lib/api"
 import { fmtNum, signalLabel } from "@/lib/format"
 import { useLiveCandles } from "@/lib/useLiveCandles"
@@ -16,17 +17,6 @@ import { CandleChart, type OverlayLine } from "@/components/CandleChart"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 
-/** A recorded change in the bot's state (signal flip or new channel), wall-clock stamped. */
-interface Change {
-  wallTs: number
-  kind: "signal" | "channel"
-  signal: number
-  close: number | null
-  resistance: number | null
-  support: number | null
-}
-
-const MAX_CHANGES = 60
 const n = (v?: number | null) => (typeof v === "number" && Number.isFinite(v) ? v : null)
 
 function fmtDuration(secs?: number | null): string {
@@ -151,6 +141,8 @@ export function Inspector() {
           info={info}
           updatedAt={status.dataUpdatedAt}
           fetching={status.isFetching}
+          errorLogs={status.data?.data?.error_logs ?? []}
+          generalLogs={status.data?.data?.general_logs ?? []}
         />
       )}
     </div>
@@ -172,11 +164,15 @@ function ControllerInspector({
   info,
   updatedAt,
   fetching,
+  errorLogs,
+  generalLogs,
 }: {
   cfg: ControllerConfig
   info: DecisionInfo | undefined
   updatedAt: number
   fetching: boolean
+  errorLogs: ErrorLog[]
+  generalLogs: ErrorLog[]
 }) {
   const { candles, status: wsStatus } = useLiveCandles(
     cfg.candles_connector,
@@ -210,85 +206,73 @@ function ControllerInspector({
   const nextCloseMs = sigTs != null && ivs != null ? (sigTs + (offset + 1) * ivs) * 1000 : null
   const toClose = nextCloseMs != null ? Math.max(0, Math.round((nextCloseMs - now) / 1000)) : null
 
-  // --- Evaluate the controller's rules against the live values -------------
-  const longBreak = close != null && res != null ? close > res : null
-  const shortBreak = close != null && sup != null ? close < sup : null
+  // --- Evaluate the controller's rules against the LIVE price --------------
+  // px moves every 2s (ticker); rel-vol comes from the signal candle (there is
+  // no live rel-vol until the candle closes). The bot itself only confirms at
+  // candle close — the verdict wording reflects that.
+  const px = tick ?? close
+  const longBreak = px != null && res != null ? px > res : null
+  const shortBreak = px != null && sup != null ? px < sup : null
   const volOk = rv != null && mult != null ? rv > mult : null
-  const toRes = close != null && res != null && close ? ((res - close) / close) * 100 : null
-  const toSup = close != null && sup != null && close ? ((close - sup) / close) * 100 : null
+  const toRes = px != null && res != null && px ? ((res - px) / px) * 100 : null
+  const toSup = px != null && sup != null && px ? ((px - sup) / px) * 100 : null
 
   let verdict: { text: string; tone: "long" | "short" | "blocked" | "flat"; detail: string }
   if (signal === 1) {
-    verdict = { tone: "long", text: "LONG — breakout up on volume", detail: "Close is above resistance and volume cleared the gate." }
+    verdict = { tone: "long", text: "LONG — breakout up on volume", detail: "The last closed candle broke resistance on volume — the bot is entering/holding long." }
   } else if (signal === -1) {
-    verdict = { tone: "short", text: "SHORT — breakout down on volume", detail: "Close is below support and volume cleared the gate." }
+    verdict = { tone: "short", text: "SHORT — breakout down on volume", detail: "The last closed candle broke support on volume — the bot is entering/holding short." }
+  } else if (longBreak && volOk) {
+    verdict = {
+      tone: "long",
+      text: "Breaking out UP right now — confirms at candle close",
+      detail: `Live price ${fmtNum(px, 4)} is above resistance ${fmtNum(res, 4)} with volume ${fmtNum(rv, 2)}× ≥ ${fmtNum(mult, 2)}×. If it CLOSES there (in ${toClose != null ? fmtCountdown(toClose) : "…"}), the bot goes LONG.`,
+    }
+  } else if (shortBreak && volOk) {
+    verdict = {
+      tone: "short",
+      text: "Breaking out DOWN right now — confirms at candle close",
+      detail: `Live price ${fmtNum(px, 4)} is below support ${fmtNum(sup, 4)} with volume ${fmtNum(rv, 2)}× ≥ ${fmtNum(mult, 2)}×. If it CLOSES there (in ${toClose != null ? fmtCountdown(toClose) : "…"}), the bot goes SHORT.`,
+    }
   } else if (longBreak && volOk === false) {
     verdict = {
       tone: "blocked",
       text: "Would go LONG — blocked by volume",
-      detail: `Price is above resistance, but rel-vol ${fmtNum(rv, 2)}× hasn't reached the required ${fmtNum(mult, 2)}×.`,
+      detail: `Live price is above resistance, but rel-vol ${fmtNum(rv, 2)}× hasn't reached the required ${fmtNum(mult, 2)}×.`,
     }
   } else if (shortBreak && volOk === false) {
     verdict = {
       tone: "blocked",
       text: "Would go SHORT — blocked by volume",
-      detail: `Price is below support, but rel-vol ${fmtNum(rv, 2)}× hasn't reached the required ${fmtNum(mult, 2)}×.`,
+      detail: `Live price is below support, but rel-vol ${fmtNum(rv, 2)}× hasn't reached the required ${fmtNum(mult, 2)}×.`,
     }
   } else {
     verdict = {
       tone: "flat",
       text: "FLAT — waiting for a breakout",
-      detail: "Price is inside the channel. No entry until it closes beyond a band on volume.",
+      detail: "Live price is inside the channel. No entry until a candle closes beyond a band on volume.",
     }
   }
 
   // Concrete "why" for each rule, with the real numbers (not just a %).
   const longWhy =
-    close == null || res == null
+    px == null || res == null
       ? "Waiting for price data…"
       : longBreak
-        ? `Close ${fmtNum(close, 4)} is ${fmtNum(close - res, 4)} ABOVE resistance ${fmtNum(res, 4)} → breakout up is live.`
-        : `Close ${fmtNum(close, 4)} is ${fmtNum(res - close, 4)} below resistance ${fmtNum(res, 4)} → must reach ${fmtNum(res, 4)} (+${fmtNum(toRes, 2)}%) to fire.`
+        ? `Price ${fmtNum(px, 4)} is ${fmtNum(px - res, 4)} ABOVE resistance ${fmtNum(res, 4)} → breakout up (needs the candle CLOSE there to fire).`
+        : `Price ${fmtNum(px, 4)} is ${fmtNum(res - px, 4)} below resistance ${fmtNum(res, 4)} → must reach ${fmtNum(res, 4)} (+${fmtNum(toRes, 2)}%) to fire.`
   const shortWhy =
-    close == null || sup == null
+    px == null || sup == null
       ? "Waiting for price data…"
       : shortBreak
-        ? `Close ${fmtNum(close, 4)} is ${fmtNum(sup - close, 4)} BELOW support ${fmtNum(sup, 4)} → breakout down is live.`
-        : `Close ${fmtNum(close, 4)} is ${fmtNum(close - sup, 4)} above support ${fmtNum(sup, 4)} → must reach ${fmtNum(sup, 4)} (−${fmtNum(toSup, 2)}%) to fire.`
+        ? `Price ${fmtNum(px, 4)} is ${fmtNum(sup - px, 4)} BELOW support ${fmtNum(sup, 4)} → breakout down (needs the candle CLOSE there to fire).`
+        : `Price ${fmtNum(px, 4)} is ${fmtNum(px - sup, 4)} above support ${fmtNum(sup, 4)} → must reach ${fmtNum(sup, 4)} (−${fmtNum(toSup, 2)}%) to fire.`
   const volWhy =
     rv == null || mult == null
       ? "Waiting for volume data…"
       : volOk
         ? `Rel-vol ${fmtNum(rv, 2)}× is above the ${fmtNum(mult, 2)}× gate → volume confirms a breakout.`
         : `Rel-vol ${fmtNum(rv, 2)}× is below the ${fmtNum(mult, 2)}× gate → needs ${fmtNum(mult - rv, 2)}× more volume; blocks any breakout.`
-
-  // --- Transitions log: record only meaningful changes (signal / new channel).
-  const [changes, setChanges] = React.useState<Change[]>([])
-  const lastRef = React.useRef<{ signal: number; res: number | null; sup: number | null; at: number } | null>(null)
-  React.useEffect(() => {
-    setChanges([])
-    lastRef.current = null
-  }, [cfg.id])
-  React.useEffect(() => {
-    if (!hasDecision || !updatedAt || updatedAt === lastRef.current?.at) return
-    const prev = lastRef.current
-    const sigChanged = !prev || prev.signal !== signal
-    const chanChanged = !prev || prev.res !== res || prev.sup !== sup
-    lastRef.current = { signal, res, sup, at: updatedAt }
-    if (prev && !sigChanged && !chanChanged) return // no-op tick — don't spam
-    setChanges((p) => {
-      const c: Change = {
-        wallTs: updatedAt,
-        kind: sigChanged ? "signal" : "channel",
-        signal,
-        close,
-        resistance: res,
-        support: sup,
-      }
-      const next = [c, ...p]
-      return next.length > MAX_CHANGES ? next.slice(0, MAX_CHANGES) : next
-    })
-  }, [updatedAt, signal, res, sup, close, hasDecision])
 
   // --- Chart channel lines at the current levels ---------------------------
   const lines = React.useMemo<OverlayLine[]>(() => {
@@ -355,7 +339,7 @@ function ControllerInspector({
               <ConditionRow
                 label="Long breakout"
                 pass={longBreak}
-                left={`close ${fmtNum(close, 4)}`}
+                left={`price ${fmtNum(px, 4)}`}
                 op=">"
                 right={`resistance ${fmtNum(res, 4)}`}
                 why={longWhy}
@@ -363,7 +347,7 @@ function ControllerInspector({
               <ConditionRow
                 label="Short breakout"
                 pass={shortBreak}
-                left={`close ${fmtNum(close, 4)}`}
+                left={`price ${fmtNum(px, 4)}`}
                 op="<"
                 right={`support ${fmtNum(sup, 4)}`}
                 why={shortWhy}
@@ -422,49 +406,80 @@ function ControllerInspector({
         </CardContent>
       </Card>
 
-      {/* Only meaningful changes — no per-tick spam */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-sm">Changes (signal flips &amp; new channels)</CardTitle>
-        </CardHeader>
-        <CardContent>
-          {changes.length === 0 ? (
-            <p className="text-xs text-muted-foreground">
-              Nothing yet — a row appears when the signal changes or a new candle recomputes the
-              resistance/support channel.
-            </p>
-          ) : (
-            <div className="space-y-1">
-              {changes.map((c) => {
-                const s = signalLabel(c.signal)
-                return (
-                  <div key={c.wallTs} className="flex items-center gap-3 text-xs">
-                    <span className="tabular-nums text-muted-foreground">
-                      {new Date(c.wallTs).toLocaleTimeString()}
-                    </span>
-                    {c.kind === "signal" ? (
-                      <>
-                        <span className="text-muted-foreground">signal →</span>
-                        <Badge className={`${s.className} text-[10px]`}>{s.text}</Badge>
-                      </>
-                    ) : (
-                      <span className="text-muted-foreground">
-                        new channel · R{" "}
-                        <span className="text-red-500">{fmtNum(c.resistance, 4)}</span> / S{" "}
-                        <span className="text-emerald-500">{fmtNum(c.support, 4)}</span>
-                      </span>
-                    )}
-                    <span className="ml-auto tabular-nums text-muted-foreground">
-                      close {fmtNum(c.close, 4)}
-                    </span>
-                  </div>
-                )
-              })}
-            </div>
-          )}
-        </CardContent>
-      </Card>
+      {/* Bot logs: errors + warnings straight from the bot */}
+      <BotLogs errorLogs={errorLogs} generalLogs={generalLogs} />
     </div>
+  )
+}
+
+function BotLogs({ errorLogs, generalLogs }: { errorLogs: ErrorLog[]; generalLogs: ErrorLog[] }) {
+  const [showInfo, setShowInfo] = React.useState(false)
+
+  // Merge, dedupe (the poll returns the same tail every 1.5s), newest first.
+  const logs = React.useMemo(() => {
+    const all = [...errorLogs, ...generalLogs]
+    const seen = new Set<string>()
+    const out: ErrorLog[] = []
+    for (const l of all) {
+      const key = `${l.timestamp}|${l.level_name}|${l.msg}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      if (!showInfo && l.level_name !== "ERROR" && l.level_name !== "WARNING") continue
+      out.push(l)
+    }
+    return out.sort((a, b) => b.timestamp - a.timestamp).slice(0, 100)
+  }, [errorLogs, generalLogs, showInfo])
+
+  const nErr = logs.filter((l) => l.level_name === "ERROR").length
+  const nWarn = logs.filter((l) => l.level_name === "WARNING").length
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between space-y-0">
+        <CardTitle className="flex items-center gap-2 text-sm">
+          Bot logs
+          {nErr > 0 && <Badge className="bg-red-600 text-[10px] text-white">{nErr} errors</Badge>}
+          {nWarn > 0 && <Badge className="bg-amber-500 text-[10px] text-black">{nWarn} warnings</Badge>}
+        </CardTitle>
+        <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          <input
+            type="checkbox"
+            checked={showInfo}
+            onChange={(e) => setShowInfo(e.target.checked)}
+          />
+          show info too
+        </label>
+      </CardHeader>
+      <CardContent>
+        {logs.length === 0 ? (
+          <p className="text-xs text-muted-foreground">
+            No errors or warnings from the bot — all clear.
+          </p>
+        ) : (
+          <div className="max-h-80 space-y-1 overflow-y-auto font-mono text-xs">
+            {logs.map((l, i) => (
+              <div key={`${l.timestamp}-${i}`} className="flex items-start gap-2">
+                <span className="shrink-0 tabular-nums text-muted-foreground">
+                  {new Date(l.timestamp * 1000).toLocaleTimeString()}
+                </span>
+                <span
+                  className={`shrink-0 rounded px-1 text-[10px] font-semibold ${
+                    l.level_name === "ERROR"
+                      ? "bg-red-600 text-white"
+                      : l.level_name === "WARNING"
+                        ? "bg-amber-500 text-black"
+                        : "bg-muted text-muted-foreground"
+                  }`}
+                >
+                  {l.level_name}
+                </span>
+                <span className="min-w-0 break-all">{l.msg}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
   )
 }
 
