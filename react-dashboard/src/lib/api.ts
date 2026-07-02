@@ -366,6 +366,14 @@ export const getHistoricalCandles = (
     end_time: endTime,
   })
 
+/** Live ticker prices straight from the connector (moves every poll, unlike the
+ * signal candle which only updates when a candle closes). */
+export const getPrices = (connector: string, tradingPairs: string[]) =>
+  apiPost<{ connector: string; prices: Record<string, number>; timestamp: number }>(
+    "/market-data/prices",
+    { connector_name: connector, trading_pairs: tradingPairs },
+  )
+
 // ---------------------------------------------------------------------------
 // Archived bots
 // ---------------------------------------------------------------------------

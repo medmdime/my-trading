@@ -6,6 +6,7 @@ import {
   getAllBotsStatus,
   getBotControllerConfigs,
   getBotStatus,
+  getPrices,
   type ControllerConfig,
   type DecisionInfo,
 } from "@/lib/api"
@@ -34,6 +35,17 @@ function fmtDuration(secs?: number | null): string {
   if (s % 3600 === 0) return `${s / 3600}h`
   if (s % 60 === 0) return `${s / 60}m`
   return `${s}s`
+}
+
+function fmtCountdown(secs: number): string {
+  const m = Math.floor(secs / 60)
+  const s = secs % 60
+  return `${m}:${String(s).padStart(2, "0")}`
+}
+
+const INTERVAL_SECS: Record<string, number> = {
+  "1m": 60, "3m": 180, "5m": 300, "15m": 900, "30m": 1800,
+  "1h": 3600, "4h": 14400, "1d": 86400,
 }
 
 export function Inspector() {
@@ -78,8 +90,9 @@ export function Inspector() {
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Decision Inspector</h1>
         <p className="text-sm text-muted-foreground">
-          Your controller's entry/exit rules, evaluated against the live price every 1.5s — so you
-          can see exactly what would trigger a trade and where it would exit.
+          Your controller's entry/exit rules with the exact numbers the bot is using. Note: with
+          signal_candle_offset=1 the bot decides on the last <b>closed</b> candle, so the signal
+          values refresh once per candle — the live ticker price moves in real time.
         </p>
       </div>
 
@@ -172,6 +185,14 @@ function ControllerInspector({
   )
   const now = useNow()
 
+  // Real ticker price — moves every poll, unlike the signal candle below.
+  const livePx = useQuery({
+    queryKey: ["livePrice", cfg.connector_name, cfg.trading_pair],
+    queryFn: () => getPrices(cfg.connector_name, [cfg.trading_pair]),
+    refetchInterval: 2_000,
+  })
+  const tick = n(livePx.data?.prices?.[cfg.trading_pair])
+
   const close = n(info?.close)
   const res = n(info?.resistance)
   const sup = n(info?.support)
@@ -179,6 +200,15 @@ function ControllerInspector({
   const mult = n(info?.rel_volume_mult) ?? n(cfg.rel_volume_mult)
   const signal = info?.signal ?? 0
   const hasDecision = info && info.signal !== undefined
+
+  // With offset=1, `close` is the last CLOSED candle — it refreshes only when
+  // the forming candle closes. Count down to that moment so a static price
+  // reads as "waiting for the candle", not "frozen".
+  const ivs = INTERVAL_SECS[cfg.interval] ?? null
+  const sigTs = n(info?.ts)
+  const offset = info?.signal_candle_offset ?? 1
+  const nextCloseMs = sigTs != null && ivs != null ? (sigTs + (offset + 1) * ivs) * 1000 : null
+  const toClose = nextCloseMs != null ? Math.max(0, Math.round((nextCloseMs - now) / 1000)) : null
 
   // --- Evaluate the controller's rules against the live values -------------
   const longBreak = close != null && res != null ? close > res : null
@@ -298,11 +328,16 @@ function ControllerInspector({
               No decision data yet — the bot must be restarted on the instrumented API image.
             </div>
           ) : (
-            <div className="grid grid-cols-3 gap-3 text-sm sm:grid-cols-5">
-              <Stat label="Live price" value={fmtNum(close, 4)} live />
+            <div className="grid grid-cols-3 gap-3 text-sm sm:grid-cols-6">
+              <Stat label="Live price" value={fmtNum(tick, 4)} live />
+              <Stat
+                label={`Signal candle (${cfg.interval} close)`}
+                value={fmtNum(close, 4)}
+                sub={toClose != null ? `next in ${fmtCountdown(toClose)}` : undefined}
+              />
               <Stat label="Resistance" value={fmtNum(res, 4)} sub={toRes != null ? `${toRes >= 0 ? "+" : ""}${fmtNum(toRes, 2)}% away` : undefined} accent="red" />
               <Stat label="Support" value={fmtNum(sup, 4)} sub={toSup != null ? `${fmtNum(toSup, 2)}% away` : undefined} accent="green" />
-              <Stat label="Rel volume" value={`${fmtNum(rv, 2)}×`} sub={`gate ${fmtNum(mult, 2)}×`} live />
+              <Stat label="Rel volume" value={`${fmtNum(rv, 2)}×`} sub={`gate ${fmtNum(mult, 2)}×`} />
               <Stat label="Leverage" value={cfg.leverage != null ? `${cfg.leverage}×` : "—"} sub={cfg.total_amount_quote != null ? `$${fmtNum(cfg.total_amount_quote, 0)}` : undefined} />
             </div>
           )}
@@ -361,11 +396,11 @@ function ControllerInspector({
           <Card>
             <CardHeader className="pb-2">
               <CardTitle className="text-sm">
-                Exit plan — if it entered now at {fmtNum(close, 4)}
+                Exit plan — if it entered now at {fmtNum(tick ?? close, 4)}
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <ExitLadder cfg={cfg} entry={close} />
+              <ExitLadder cfg={cfg} entry={tick ?? close} />
               <p className="mt-2 text-xs text-muted-foreground">
                 Computed from your config off the current price. Whichever level is hit first closes
                 the position. Trailing only arms after price reaches the activation, then follows by
